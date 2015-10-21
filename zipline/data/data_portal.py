@@ -638,29 +638,35 @@ class DataPortal(object):
         -------
         None.  The data array is modified in place.
         """
+        splits_list = self._get_adjustment_list(
+            sid, self.splits_dict, "SPLITS"
+        )
+
         self._apply_adjustments_to_window(
-            self._get_adjustment_list(
-                sid, self.splits_dict, "SPLITS"
-            ),
+            splits_list,
             data,
             dts,
             field != 'volume'
         )
 
         if field != 'volume':
+            mergers_list = self._get_adjustment_list(
+                sid, self.mergers_dict, "MERGERS"
+            )
+
             self._apply_adjustments_to_window(
-                self._get_adjustment_list(
-                    sid, self.mergers_dict, "MERGERS"
-                ),
+                mergers_list,
                 data,
                 dts,
                 True
             )
 
+            dividends_list = self._get_adjustment_list(
+                sid, self.dividends_dict, "DIVIDENDS"
+            )
+
             self._apply_adjustments_to_window(
-                self._get_adjustment_list(
-                    sid, self.dividends_dict, "DIVIDENDS"
-                ),
+                dividends_list,
                 data,
                 dts,
                 True
@@ -845,9 +851,9 @@ class DataPortal(object):
 
             range_end = dts_in_window.searchsorted(adjustment_to_apply[0])
             if multiply:
-                window_data[0:range_end] *= adjustment_to_apply[1]
+                window_data[0:range_end + 1] *= adjustment_to_apply[1]
             else:
-                window_data[0:range_end] /= adjustment_to_apply[1]
+                window_data[0:range_end + 1] /= adjustment_to_apply[1]
 
             idx += 1
 

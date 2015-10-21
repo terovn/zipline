@@ -1022,7 +1022,10 @@ class HistoryTestCase(TestCase):
 
             self.assertEqual(len(window), len(ref))
 
-            np.testing.assert_allclose(window.loc[:, self.DIVIDEND_SID], ref)
+            np.testing.assert_allclose(
+                window.loc[:, self.DIVIDEND_SID],
+                ref,
+                rtol=1e-03)
 
         # 2014-03-14 00:00:00+00:00,106408,106527,103498,105012,950
         # 2014-03-17 00:00:00+00:00,106411,110252,99877,105064,950
@@ -1035,10 +1038,79 @@ class HistoryTestCase(TestCase):
         # 2014-03-21 13:34:00+00:00,114101,116620,106654,111637,2867
         # 2014-03-21 13:35:00+00:00,114104,123773,107769,115771,2867
 
-        open_ref = [100.108,  # 2014-03-14 00:00:00+00:00
-                    100.111,  # 2014-03-17 00:00:00+00:00
-                    100.026,  # 2014-03-18 00:00:00+00:00
-                    100.030,  # 2014-03-19 00:00:00+00:00
+        # Stock has dividends on 2014-03-18 (2.0) and 2014-03-20 (4.0),
+        # which should generate adjustments on 2014-03-17 and 2014-03-19
+
+        # Derivation of open_ref
+
+        # In []:
+        # 2015-03-20 ex_date adjustment
+        # apply on 2014-03-19 and use close of 2015-03-19
+        # second_div_adj = 1 - (4.0 / 104.851)
+        # second_div_adj
+        #
+        # 0.9618506261265987
+
+        # In []:
+        # 2015-03-18 ex_date adjustment
+        # apply on 2015-03-17 and use close of 2015-03-17
+        # first_div_adj = 1 - (2.0 / 105.064)
+        # first_div_adj
+        #
+        # 0.9809639838574583
+
+        # In []:
+        # 2015-03-17 adjustment product
+        # first_div_adj_prod = first_div_adj * second_div_adj
+        # first_div_adj_prod
+        #
+        # 0.9435408220809389
+
+        # In []:
+        # Open prices
+        #
+        # 2014-03-14
+        # 106.408 * first_div_adj_prod
+        #
+        # 100.40029179598855
+
+        # In []:
+        # 2014-03-17
+        # 106.411 * first_div_adj_prod
+        #
+        # 100.4031224184548
+
+        # In []:
+        # 2014-03-18
+        # 104.194 * second_div_adj
+        #
+        # 100.21906413863482
+
+        # In []:
+        # 2014-03-19
+        # 104.198 * second_div_adj
+        #
+        # 100.22291154113933
+
+        # In []:
+        # 2014-03-20 (no adjustment)
+        # 100.032
+        #
+        # 100.032
+
+        # In []:
+        # 2014-03-21 13:35
+        # 114.098
+        #
+        # 114.098
+
+        # open_ref is copied from above calculations,
+        # all other are taken from results to prevent regression.
+
+        open_ref = [100.400,  # 2014-03-14 00:00:00+00:00
+                    100.403,  # 2014-03-17 00:00:00+00:00
+                    100.219,  # 2014-03-18 00:00:00+00:00
+                    100.223,  # 2014-03-19 00:00:00+00:00
                     100.032,  # 2014-03-20 00:00:00+00:00
                     114.098]  # 2014-03-21 00:00:00+00:00
 
