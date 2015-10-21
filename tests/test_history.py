@@ -17,6 +17,7 @@ from zipline.data.us_equity_pricing import (
     DailyBarWriterFromCSVs,
     SQLiteAdjustmentWriter,
     SQLiteAdjustmentReader,
+    BcolzDailyBarReader,
 )
 from zipline.utils.test_utils import make_simple_asset_info, str_to_seconds
 from zipline.data.minute_writer import MinuteBarWriterFromCSVs
@@ -36,12 +37,6 @@ TEST_DAILY_RESOURCE_PATH = join(
     'resources',
     'pipeline_inputs',
 )
-
-
-class MockDailyBarReader(object):
-
-    def spot_price(self, col, sid, dt):
-        return 100
 
 
 class HistoryTestCase(TestCase):
@@ -71,6 +66,8 @@ class HistoryTestCase(TestCase):
 
         cls.tempdir = TempDirectory()
         cls.tempdir.create()
+
+        cls.daily_bar_data_path = cls.tempdir.getpath('test_daily_data.bcolz')
 
         try:
             cls.create_fake_minute_data(cls.tempdir)
@@ -186,15 +183,15 @@ class HistoryTestCase(TestCase):
             frame['price'] = frame['close']
 
         writer = DailyBarWriterFromCSVs(resources)
-        data_path = tempdir.getpath('test_daily_data.bcolz')
-        writer.write(data_path, trading_days, cls.assets)
+        writer.write(cls.daily_bar_data_path, trading_days, cls.assets)
 
     @classmethod
     def create_fake_adjustments(cls, tempdir, filename,
                                 splits=None, mergers=None, dividends=None):
-        writer = SQLiteAdjustmentWriter(tempdir.getpath(filename),
-                                        cls.env.trading_days,
-                                        MockDailyBarReader())
+        writer = SQLiteAdjustmentWriter(
+            tempdir.getpath(filename),
+            cls.env.trading_days,
+            BcolzDailyBarReader(cls.daily_bar_data_path))
 
         if dividends is None:
             dividends = DataFrame(
