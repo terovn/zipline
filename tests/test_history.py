@@ -96,7 +96,7 @@ class HistoryTestCase(TestCase):
             )
 
             mergers = DataFrame([
-                {'effective_date': str_to_seconds("2014-07-16"),
+                {'effective_date': str_to_seconds("2014-07-15"),
                  'ratio': 0.5,
                  'sid': cls.C}
             ],
