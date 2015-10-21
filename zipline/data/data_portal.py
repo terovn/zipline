@@ -601,12 +601,13 @@ class DataPortal(object):
             return_data,
             sid,
             minutes_for_window,
-            field
+            field,
+            'minute',
         )
 
         return return_data
 
-    def _apply_all_adjustments(self, data, sid, dts, field):
+    def _apply_all_adjustments(self, data, sid, dts, field, window_type):
         """
         Internal method that applies all the necessary adjustments on the
         given data array.
@@ -638,11 +639,16 @@ class DataPortal(object):
         -------
         None.  The data array is modified in place.
         """
+        if window_type == 'minute':
+            adjust_method = self._apply_adjustments_to_minute_window
+        elif window_type == 'daily':
+            adjust_method = self._apply_adjustments_to_daily_window
+
         splits_list = self._get_adjustment_list(
             sid, self.splits_dict, "SPLITS"
         )
 
-        self._apply_adjustments_to_window(
+        adjust_method(
             splits_list,
             data,
             dts,
@@ -654,7 +660,7 @@ class DataPortal(object):
                 sid, self.mergers_dict, "MERGERS"
             )
 
-            self._apply_adjustments_to_window(
+            adjust_method(
                 mergers_list,
                 data,
                 dts,
@@ -665,7 +671,7 @@ class DataPortal(object):
                 sid, self.dividends_dict, "DIVIDENDS"
             )
 
-            self._apply_adjustments_to_window(
+            adjust_method(
                 dividends_list,
                 data,
                 dts,
@@ -819,14 +825,15 @@ class DataPortal(object):
             return_array,
             sid,
             days_in_window,
-            field
+            field,
+            'daily',
         )
 
         return return_array
 
     @staticmethod
-    def _apply_adjustments_to_window(adjustments_list, window_data,
-                                     dts_in_window, multiply):
+    def _apply_adjustments_to_minute_window(
+            adjustments_list, window_data, dts_in_window, multiply):
         if len(adjustments_list) == 0:
             return
 
@@ -851,9 +858,43 @@ class DataPortal(object):
 
             range_end = dts_in_window.searchsorted(adjustment_to_apply[0])
             if multiply:
-                window_data[0:range_end + 1] *= adjustment_to_apply[1]
+                window_data[0:range_end] *= adjustment_to_apply[1]
             else:
-                window_data[0:range_end + 1] /= adjustment_to_apply[1]
+                window_data[0:range_end] /= adjustment_to_apply[1]
+
+            idx += 1
+
+    @staticmethod
+    def _apply_adjustments_to_daily_window(
+            adjustments_list, window_data, dts_in_window, multiply):
+        if len(adjustments_list) == 0:
+            return
+
+        # advance idx to the correct spot in the adjustments list, based on
+        # when the window starts
+        idx = 0
+
+        while idx < len(adjustments_list) and dts_in_window[0] >\
+                adjustments_list[idx][0]:
+            idx += 1
+
+        # if we've advanced through all the adjustments, then there's nothing
+        # to do.
+        if idx == len(adjustments_list):
+            return
+
+        while idx < len(adjustments_list):
+            adjustment_to_apply = adjustments_list[idx]
+
+            if adjustment_to_apply[0] > dts_in_window[-1]:
+                break
+
+            range_end = dts_in_window.searchsorted(adjustment_to_apply[0])
+            range_end += 1
+            if multiply:
+                window_data[0:range_end] *= adjustment_to_apply[1]
+            else:
+                window_data[0:range_end] /= adjustment_to_apply[1]
 
             idx += 1
 
