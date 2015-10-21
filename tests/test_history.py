@@ -83,7 +83,7 @@ class HistoryTestCase(TestCase):
                 {'effective_date': str_to_seconds("2014-03-21"),
                  'ratio': 0.5,
                  'sid': cls.AAPL},
-                {'effective_date': str_to_seconds("2014-03-28"),
+                {'effective_date': str_to_seconds("2014-04-01"),
                  'ratio': 0.5,
                  'sid': cls.IBM},
                 {'effective_date': str_to_seconds("2014-07-01"),
@@ -96,7 +96,7 @@ class HistoryTestCase(TestCase):
             )
 
             mergers = DataFrame([
-                {'effective_date': str_to_seconds("2014-07-15"),
+                {'effective_date': str_to_seconds("2014-07-16"),
                  'ratio': 0.5,
                  'sid': cls.C}
             ],
@@ -603,7 +603,7 @@ class HistoryTestCase(TestCase):
         splits = DataFrame(
             [
                 {
-                    'effective_date': str_to_seconds('2014-06-06'),
+                    'effective_date': str_to_seconds('2014-06-09'),
                     'ratio': (1 / 7.0),
                     'sid': self.AAPL,
                 }
