@@ -445,8 +445,7 @@ class HistoryTestCase(TestCase):
 
             self.assertEqual(len(window), len(ref))
 
-            for i in range(0, len(ref) - 1):
-                self.assertEquals(window.iloc[i].loc[self.C], ref[i])
+            np.testing.assert_allclose(window.loc[:, self.C], ref, rtol=1e-3)
 
         open_ref = [71.99, 71.991, 71.992, 71.996, 71.996,
                     72.000, 72.001, 72.002, 72.004, 72.005]
