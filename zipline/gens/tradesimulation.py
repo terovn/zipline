@@ -26,6 +26,7 @@ from zipline.gens.sim_engine import (
     ONCE_A_DAY,
     UPDATE_BENCHMARK,
     CALC_PERFORMANCE,
+    CALC_MINUTE_PERFORMANCE
 )
 
 
@@ -171,6 +172,11 @@ class AlgorithmSimulator(object):
                         perf_tracker_benchmark_returns[dt] = 0.01
                 elif action == CALC_PERFORMANCE:
                     yield self.get_daily_message(dt, algo, perf_tracker)
+                elif action == CALC_MINUTE_PERFORMANCE:
+                    minute, daily = self.get_minute_message(
+                        dt, algo, perf_tracker)
+                    if daily:
+                        yield daily
 
         risk_message = perf_tracker.handle_simulation_end()
         yield risk_message
@@ -293,7 +299,7 @@ class AlgorithmSimulator(object):
                     minutes_in_first_day[-1],
                     bar_count=len(minutes_in_first_day),
                     frequency="1m",
-                    field="close_price"
+                    field="close"
                 )[sid]
 
                 # find the first non-zero value

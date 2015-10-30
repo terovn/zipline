@@ -10,6 +10,7 @@ cpdef enum:
     ONCE_A_DAY = 1
     UPDATE_BENCHMARK = 2
     CALC_PERFORMANCE = 3
+    CALC_MINUTE_PERFORMANCE = 4
 
 
 cdef class MinuteSimulationClock:
