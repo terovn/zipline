@@ -155,6 +155,7 @@ from toolz import (
 )
 import toolz.curried.operator as op
 from six import with_metaclass, PY2, itervalues
+from six.moves import reduce
 
 
 from ..data.dataset import DataSet, Column
@@ -177,7 +178,7 @@ traversable_nodes = (
     bz.expr.Label,
 )
 is_invalid_deltas_node = complement(flip(isinstance, valid_deltas_node_types))
-getname = op.attrgetter('__name__')
+get__name__ = op.attrgetter('__name__')
 
 
 class _ExprRepr(object):
@@ -512,8 +513,10 @@ def from_blaze(expr,
             raise TypeError(
                 'expression with deltas may only contain (%s) nodes,'
                 " found: %s" % (
-                    ', '.join(map(getname, valid_deltas_node_types)),
-                    ', '.join(set(map(compose(getname, type), invalid_nodes))),
+                    ', '.join(map(get__name__, valid_deltas_node_types)),
+                    ', '.join(
+                        set(map(compose(get__name__, type), invalid_nodes)),
+                    ),
                 ),
             )
 
@@ -591,7 +594,7 @@ def from_blaze(expr,
 
 
 getdataset = op.attrgetter('dataset')
-dataset_name = op.attrgetter('name')
+getname = op.attrgetter('name')
 
 
 def overwrite_novel_deltas(baseline, deltas, dates):
@@ -744,8 +747,28 @@ def adjustments_from_deltas_with_sids(dates,
 
 
 class BlazeLoader(dict):
-    def __init__(self, colmap=None):
-        self.update(colmap or {})
+    """A pipeline loader for blaze expressions.
+
+    Parameters
+    ----------
+    dsmap : mapping, optional
+        An initial mapping of datasets to ``ExprData`` objects.
+        NOTE: Further mutations to this map will not be reflected by this
+        object.
+
+    Notes
+    -----
+    To register a new dataset with the blaze loader, use the ``from_blaze``
+    function with the keyword arg ``loader=my_blaze_loader`` where
+    ``my_blaze_loader`` is an instance of a ``BlazeLoader``. If you do not
+    explicitly set a loader, ``BlazeLoader.global_instance()`` will be used.
+
+    See Also
+    --------
+    from_blaze
+    """
+    def __init__(self, dsmap=None):
+        self.update(dsmap or {})
 
     @classmethod
     @memoize(cache=WeakKeyDictionary())
@@ -785,13 +808,50 @@ class BlazeLoader(dict):
         expr, deltas, resources = self[dataset]
         have_sids = SID_FIELD_NAME in expr.fields
         assets = list(map(int, assets))  # coerce from numpy.int64
-        fields = list(map(dataset_name, columns))
-        query_fields = fields + [AD_FIELD_NAME, TS_FIELD_NAME] + (
+        added_query_fields = [AD_FIELD_NAME, TS_FIELD_NAME] + (
             [SID_FIELD_NAME] if have_sids else []
         )
 
-        def where(e):
+        def where(e, column):
             """Create the query to run against the resources.
+
+            Parameters
+            ----------
+            e : Expr
+                The baseline or deltas expression.
+            column : BoundColumn
+                The column to query for.
+
+            Returns
+            -------
+            q : Expr
+                The query to run for the given column.
+            """
+            colname = column.name
+            filtered = e[e[colname].notnull() & (e[TS_FIELD_NAME] <= dates[0])]
+            lower = filtered.timestamp.max()
+
+            if have_sids:
+                # If we have sids, then we need to take the earliest of the
+                # greatest date that has a non-null value by sid.
+                lower = bz.by(
+                    filtered[SID_FIELD_NAME],
+                    timestamp=lower,
+                ).timestamp.min()
+
+            lower = odo(lower, pd.Timestamp)
+            if lower is pd.NaT:
+                # If there is no lower date, just query for data in he date
+                # range. It must all be null anyways.
+                lower = dates[0]
+
+            return e[
+                (e[TS_FIELD_NAME] >= lower) &
+                (e[TS_FIELD_NAME] <= dates[-1])
+            ][added_query_fields + [colname]]
+
+        def collect_expr(e, _kwargs={'d': resources} if resources else {}):
+            """Execute and merge all of the per-column subqueries.
 
             Parameters
             ----------
@@ -800,28 +860,29 @@ class BlazeLoader(dict):
 
             Returns
             -------
-            q : Expr
-                The query to run.
+            result : pd.DataFrame
+                The resulting dataframe.
+
+            Notes
+            -----
+            This can return more data than needed. The in memory reindex will
+            handle this.
             """
-            ts = e[TS_FIELD_NAME]
-            # Hack to get the lower bound to query:
-            # This must be strictly executed because the data for `ts` will
-            # be removed from scope too early otherwise.
-            lower = odo(ts[ts <= dates[0]].max(), pd.Timestamp)
-            selection = ts <= dates[-1]
-            if have_sids:
-                selection &= e[SID_FIELD_NAME].isin(assets)
-            if lower is not pd.NaT:
-                selection &= ts >= lower
+            return reduce(
+                partial(pd.merge, on=added_query_fields, how='outer'),
+                (
+                    odo(where(e, column), pd.DataFrame, **_kwargs)
+                    for column in columns
+                ),
+            )
 
-            return e[selection][query_fields]
-
-        extra_kwargs = {'d': resources} if resources else {}
-        materialized_expr = odo(where(expr), pd.DataFrame, **extra_kwargs)
+        materialized_expr = collect_expr(expr)
         materialized_deltas = (
-            odo(where(deltas), pd.DataFrame, **extra_kwargs)
+            collect_expr(deltas)
             if deltas is not None else
-            pd.DataFrame(columns=query_fields)
+            pd.DataFrame(
+                columns=added_query_fields + list(map(getname, columns)),
+            )
         )
 
         # Inline the deltas that changed our most recently known value.
@@ -843,10 +904,11 @@ class BlazeLoader(dict):
             sparse_deltas = non_novel_deltas.set_index(
                 [TS_FIELD_NAME, SID_FIELD_NAME],
             ).unstack()
-
-            dense_output = sparse_output.reindex(dates, method='ffill')
-            cols = dense_output.columns
-            dense_output = dense_output.reindex(
+            cols = sparse_output.columns
+            dense_output = sparse_output.groupby(
+                dates[dates.searchsorted(sparse_output.index)],
+            ).last().reindex(
+                index=dates,
                 columns=pd.MultiIndex.from_product(
                     (cols.levels[0], assets),
                     names=cols.names,
@@ -869,9 +931,13 @@ class BlazeLoader(dict):
                 partial(repeat_last_axis, count=len(assets)),
             )
             sparse_output = sparse_output.set_index(TS_FIELD_NAME)
-            dense_output = sparse_output.reindex(dates, method='ffill')
+            dense_output = sparse_output.groupby(
+                dates[dates.searchsorted(sparse_output.index)],
+            ).last().reindex(dates)
             sparse_deltas = non_novel_deltas.set_index(TS_FIELD_NAME)
             adjustments_from_deltas = adjustments_from_deltas_no_sids
+
+        dense_output.ffill(inplace=True)
 
         for column_idx, column in enumerate(columns):
             column_name = column.name
