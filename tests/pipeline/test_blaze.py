@@ -292,8 +292,8 @@ class BlazeToPipelineTestCase(TestCase):
                 loader=self.garbage_loader,
             )
 
-    def test_id(self):
-        expr = bz.Data(self.df, name='expr', dshape=self.dshape)
+    def _test_id(self, df, dshape, expected, finder, add):
+        expr = bz.Data(df, name='expr', dshape=dshape)
         loader = BlazeLoader()
         ds = from_blaze(
             expr,
@@ -301,7 +301,8 @@ class BlazeToPipelineTestCase(TestCase):
             no_deltas_rule='ignore',
         )
         p = Pipeline()
-        p.add(ds.value.latest, 'value')
+        for a in add:
+            p.add(getattr(ds, a).latest, a)
         dates = self.dates
 
         with tmp_asset_finder() as finder:
@@ -311,82 +312,130 @@ class BlazeToPipelineTestCase(TestCase):
                 finder,
             ).run_pipeline(p, dates[0], dates[-1])
 
-        expected = self.df.drop('asof_date', axis=1).set_index(
-            ['timestamp', 'sid'],
-        )
-        expected.index = pd.MultiIndex.from_product((
-            expected.index.levels[0],
-            finder.retrieve_all(expected.index.levels[1]),
-        ))
         assert_frame_equal(result, expected, check_dtype=False)
+
+    def test_id(self):
+        with tmp_asset_finder() as finder:
+            expected = self.df.drop('asof_date', axis=1).set_index(
+                ['timestamp', 'sid'],
+            )
+            expected.index = pd.MultiIndex.from_product((
+                expected.index.levels[0],
+                finder.retrieve_all(expected.index.levels[1]),
+            ))
+            self._test_id(self.df, self.dshape, expected, finder, ('value',))
+
+    def test_id_ffill_out_of_window(self):
+        dates = self.dates.repeat(3) - timedelta(days=10)
+        df = pd.DataFrame({
+            'sid': self.sids * 3,
+            'value': (0, 1, np.nan, 1, np.nan, 3, np.nan, 3, 4),
+            'other': (0, np.nan, 2, np.nan, 2, 3, 2, 3, np.nan),
+            'asof_date': dates,
+            'timestamp': dates,
+        })
+        fields = OrderedDict(self.dshape.measure.fields)
+        fields['other'] = fields['value']
+
+        with tmp_asset_finder() as finder:
+            expected = pd.DataFrame(
+                np.array([[2, 1],
+                          [3, 3],
+                          [3, 4],
+                          [2, 1],
+                          [3, 3],
+                          [3, 4],
+                          [2, 1],
+                          [3, 3],
+                          [3, 4]]),
+                columns=['other', 'value'],
+                index=pd.MultiIndex.from_product(
+                    (self.dates, finder.retrieve_all(self.sids)),
+                ),
+            )
+            self._test_id(
+                df,
+                var * Record(fields),
+                expected,
+                finder,
+                ('value', 'other'),
+            )
 
     def test_id_multiple_columns(self):
         df = self.df.copy()
         df['other'] = df.value + 1
         fields = OrderedDict(self.dshape.measure.fields)
         fields['other'] = fields['value']
-        expr = bz.Data(df, name='expr', dshape=var * Record(fields))
-        loader = BlazeLoader()
-        ds = from_blaze(
-            expr,
-            loader=loader,
-            no_deltas_rule='ignore',
-        )
-        p = Pipeline()
-        p.add(ds.value.latest, 'value')
-        p.add(ds.other.latest, 'other')
-        dates = self.dates
-
         with tmp_asset_finder() as finder:
-            result = SimplePipelineEngine(
-                loader,
-                dates,
+            expected = df.drop('asof_date', axis=1).set_index(
+                ['timestamp', 'sid'],
+            ).sort_index(axis=1)
+            expected.index = pd.MultiIndex.from_product((
+                expected.index.levels[0],
+                finder.retrieve_all(expected.index.levels[1]),
+            ))
+            self._test_id(
+                df,
+                var * Record(fields),
+                expected,
                 finder,
-            ).run_pipeline(p, dates[0], dates[-1])
-
-        expected = df.drop('asof_date', axis=1).set_index(
-            ['timestamp', 'sid'],
-        ).sort_index(axis=1)
-        expected.index = pd.MultiIndex.from_product((
-            expected.index.levels[0],
-            finder.retrieve_all(expected.index.levels[1]),
-        ))
-        assert_frame_equal(
-            result,
-            expected.sort_index(axis=1),
-            check_dtype=False,
-        )
+                ('value', 'other'),
+            )
 
     def test_id_macro_dataset(self):
-        expr = bz.Data(self.macro_df, name='expr', dshape=self.macro_dshape)
-        loader = BlazeLoader()
-        ds = from_blaze(
-            expr,
-            loader=loader,
-            no_deltas_rule='ignore',
-        )
-        p = Pipeline()
-        p.add(ds.value.latest, 'value')
-        dates = self.dates
-
         asset_info = asset_infos[0][0]
-        with tmp_asset_finder(asset_info) as finder:
-            result = SimplePipelineEngine(
-                loader,
-                dates,
-                finder,
-            ).run_pipeline(p, dates[0], dates[-1])
-
         nassets = len(asset_info)
-        expected = pd.DataFrame(
-            list(concatv([0] * nassets, [1] * nassets, [2] * nassets)),
-            index=pd.MultiIndex.from_product((
-                self.macro_df.timestamp,
-                finder.retrieve_all(asset_info.index),
-            )),
-            columns=('value',),
-        )
-        assert_frame_equal(result, expected, check_dtype=False)
+        with tmp_asset_finder() as finder:
+            expected = pd.DataFrame(
+                list(concatv([0] * nassets, [1] * nassets, [2] * nassets)),
+                index=pd.MultiIndex.from_product((
+                    self.macro_df.timestamp,
+                    finder.retrieve_all(asset_info.index),
+                )),
+                columns=('value',),
+            )
+            self._test_id(
+                self.macro_df,
+                self.macro_dshape,
+                expected,
+                finder,
+                ('value',),
+            )
+
+    def test_id_ffill_out_of_window_macro_dataset(self):
+        dates = self.dates - timedelta(days=10)
+        df = pd.DataFrame({
+            'value': (0, np.nan, np.nan),
+            'other': (np.nan, 1, np.nan),
+            'asof_date': dates,
+            'timestamp': dates,
+        })
+        fields = OrderedDict(self.macro_dshape.measure.fields)
+        fields['other'] = fields['value']
+
+        with tmp_asset_finder() as finder:
+            expected = pd.DataFrame(
+                np.array([[0, 1],
+                          [0, 1],
+                          [0, 1],
+                          [0, 1],
+                          [0, 1],
+                          [0, 1],
+                          [0, 1],
+                          [0, 1],
+                          [0, 1]]),
+                columns=['value', 'other'],
+                index=pd.MultiIndex.from_product(
+                    (self.dates, finder.retrieve_all(self.sids)),
+                ),
+            ).sort_index(axis=1)
+            self._test_id(
+                df,
+                var * Record(fields),
+                expected,
+                finder,
+                ('value', 'other'),
+            )
 
     def test_id_macro_dataset_multiple_columns(self):
         df = self.macro_df.copy()
