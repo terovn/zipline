@@ -477,10 +477,6 @@ class DataPortal(object):
                 else:
                     return 0
 
-        if column != 'volume':
-            return raw_value * self.DAILY_PRICE_ADJUSTMENT_FACTOR
-        else:
-            return raw_value
 
     def _get_history_daily_window(self, assets, end_dt, bar_count,
                                   field_to_use):
