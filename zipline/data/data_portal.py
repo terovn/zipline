@@ -29,11 +29,8 @@ from zipline.errors import (
 )
 
 # FIXME anything to do with 2002-01-02 probably belongs in qexec, right/
-FIRST_TRADING_DAY = pd.Timestamp("2002-01-02 00:00:00", tz='UTC')
-FIRST_TRADING_MINUTE = pd.Timestamp("2002-01-02 14:31:00", tz='UTC')
-
-# FIXME should this be passed in (is this qexec specific?)?
-INDEX_OF_FIRST_TRADING_DAY = 3028
+DEFAULT_FIRST_TRADING_DAY = pd.Timestamp("2002-01-02 00:00:00", tz='UTC')
+DEFAULT_FIRST_TRADING_MINUTE = pd.Timestamp("2002-01-02 14:31:00", tz='UTC')
 
 log = Logger('DataPortal')
 
@@ -57,6 +54,8 @@ class DataPortal(object):
                  sim_params=None,
                  minutes_equities_path=None,
                  daily_equities_path=None,
+                 first_trading_day=DEFAULT_FIRST_TRADING_DAY,
+                 first_trading_minute=DEFAULT_FIRST_TRADING_MINUTE,
                  adjustment_reader=None,
                  equity_sid_path_func=None,
                  futures_sid_path_func=None):
@@ -129,6 +128,11 @@ class DataPortal(object):
 
         self.DAILY_PRICE_ADJUSTMENT_FACTOR = 0.001
         self.MINUTE_PRICE_ADJUSTMENT_FACTOR = 0.001
+
+        self.first_trading_day = first_trading_day
+        self.first_trading_minute = first_trading_minute
+        self.index_of_first_trading_day = tradingcalendar.trading_days.\
+            searchsorted(self.first_trading_day)
 
     def handle_extra_source(self, source_df):
         """
@@ -392,7 +396,7 @@ class DataPortal(object):
             #   (index of minute in day)
             given_day = pd.Timestamp(dt.date(), tz='utc')
             day_index = tradingcalendar.trading_days.searchsorted(
-                given_day) - INDEX_OF_FIRST_TRADING_DAY
+                given_day) - self.index_of_first_trading_day
 
             # if dt is before the first market minute, minute_index
             # will be 0.  if it's after the last market minute, it'll
@@ -413,7 +417,7 @@ class DataPortal(object):
             # get this asset's start date, so that we don't look before it.
             start_date = self._get_asset_start_date(asset)
             start_date_idx = tradingcalendar.trading_days.searchsorted(
-                start_date) - INDEX_OF_FIRST_TRADING_DAY
+                start_date) - self.index_of_first_trading_day
             start_day_offset = start_date_idx * 390
 
             original_start = minute_offset_to_use
@@ -465,7 +469,7 @@ class DataPortal(object):
 
         # find when the asset started trading
         asset_data_start_date = max(self._get_asset_start_date(asset),
-                                    FIRST_TRADING_DAY)
+                                    self.first_trading_day)
 
         tradingdays = tradingcalendar.trading_days
 
@@ -656,7 +660,7 @@ class DataPortal(object):
         # but then cut it down to only the minutes after
         # FIRST_TRADING_MINUTE
         modified_minutes_for_window = minutes_for_window[
-            minutes_for_window.slice_indexer(FIRST_TRADING_MINUTE)]
+            minutes_for_window.slice_indexer(self.first_trading_minute)]
 
         modified_minutes_length = len(modified_minutes_for_window)
 
@@ -669,7 +673,7 @@ class DataPortal(object):
         nans_to_prepend = None
 
         if modified_minutes_length < bar_count and \
-           (modified_minutes_for_window[0] == FIRST_TRADING_MINUTE):
+           (modified_minutes_for_window[0] == self.first_trading_minute):
             # the beginning of the window goes before our global trading
             # start date
             bars_to_prepend = bar_count - modified_minutes_length
@@ -947,8 +951,7 @@ class DataPortal(object):
 
         np.around(data, 3, out=data)
 
-    @staticmethod
-    def _find_position_of_minute(minute_dt):
+    def _find_position_of_minute(self, minute_dt):
         """
         Internal method that returns the position of the given minute in the
         list of every trading minute since market open on 1/2/2002.
@@ -971,7 +974,7 @@ class DataPortal(object):
         """
         day = minute_dt.date()
         day_idx = tradingcalendar.trading_days.searchsorted(day) -\
-            INDEX_OF_FIRST_TRADING_DAY
+            self.index_of_first_trading_day
 
         day_open = pd.Timestamp(
             datetime(
@@ -1045,7 +1048,7 @@ class DataPortal(object):
         # Calculate the starting day to use (either the asset's first trading
         # day, or 1/1/2002 (which is the 3028th day in the trading calendar).
         first_trading_day_to_use = max(trading_days.searchsorted(
-            self._asset_start_dates[asset]), INDEX_OF_FIRST_TRADING_DAY)
+            self._asset_start_dates[asset]), self.index_of_first_trading_day)
 
         # find the # of trading days between max(asset's first trade date,
         # 2002-01-02) and start_dt
