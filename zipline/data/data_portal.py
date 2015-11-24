@@ -348,8 +348,7 @@ class DataPortal(object):
                 day_to_use = pd.Timestamp(dt.date(), tz='UTC')
             else:
                 day_to_use = self.current_day
-            return self.daily_bar_reader.spot_price(
-                asset, day_to_use, column_to_use)
+            return self._get_daily_data(asset, column_to_use, day_to_use)
         else:
             dt_to_use = dt or self.current_dt
 
@@ -497,11 +496,15 @@ class DataPortal(object):
         assert lookup_idx <= daily_attrs['last_row'][str(sid)] + 1
 
         ctable = daily_data[column]
-        raw_value = ctable[lookup_idx]
-
-        while raw_value == 0 and lookup_idx > asset_file_index:
-            lookup_idx -= 1
-            raw_value = ctable[lookup_idx]
+        while True:
+            value = self.daily_bar_reader.spot_price(asset, dt, column)
+            if value != -1:
+                return value
+            else:
+                if dt != self.daily_bar_reader._calendar[0]:
+                    dt -= tradingcalendar.trading_day
+                else:
+                    return 0
 
         if column != 'volume':
             return raw_value * self.DAILY_PRICE_ADJUSTMENT_FACTOR

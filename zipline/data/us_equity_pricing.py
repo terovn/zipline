@@ -499,10 +499,16 @@ class BcolzDailyBarReader(object):
             raise NoDataOnDate(
                 "No data on or after day={0} for sid={1}".format(
                     day, sid))
+        price = self._spot_col(colname)[ix]
+        if price == 0:
+            return -1
         if colname != 'volume':
-            return self._spot_col(colname)[ix] * 0.001
+            if price != 0:
+                return self._spot_col(colname)[ix] * 0.001
+            else:
+                return nan
         else:
-            return self._spot_col(colname)[ix]
+            return price
 
 
 class SQLiteAdjustmentWriter(object):
