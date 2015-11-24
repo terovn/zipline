@@ -129,10 +129,9 @@ class DataPortal(object):
         self.DAILY_PRICE_ADJUSTMENT_FACTOR = 0.001
         self.MINUTE_PRICE_ADJUSTMENT_FACTOR = 0.001
 
-        self.first_trading_day = first_trading_day
         self.first_trading_minute = first_trading_minute
         self.index_of_first_trading_day = tradingcalendar.trading_days.\
-            searchsorted(self.first_trading_day)
+            searchsorted(first_trading_day)
 
         if self._daily_equities_path is not None:
             self.daily_bar_reader = BcolzDailyBarReader(
@@ -468,34 +467,6 @@ class DataPortal(object):
             return result
 
     def _get_daily_data(self, asset, column, dt):
-        dt = pd.Timestamp(dt.date(), tz='utc')
-        daily_data, daily_attrs = self._open_daily_file()
-
-        sid = int(asset)
-
-        # find the start index in the daily file for this asset
-        asset_file_index = daily_attrs['first_row'][str(sid)]
-
-        # find when the asset started trading
-        asset_data_start_date = max(self._get_asset_start_date(asset),
-                                    self.first_trading_day)
-
-        tradingdays = tradingcalendar.trading_days
-
-        # figure out how many days it's been between now and when this
-        # asset starting trading
-        # FIXME can cache tradingdays.searchsorted(asset_data_start_date)
-        window_offset = tradingdays.searchsorted(dt) - \
-            tradingdays.searchsorted(asset_data_start_date)
-
-        # and use that offset to find our lookup index
-        lookup_idx = asset_file_index + window_offset
-
-        # sanity check
-        assert lookup_idx >= asset_file_index
-        assert lookup_idx <= daily_attrs['last_row'][str(sid)] + 1
-
-        ctable = daily_data[column]
         while True:
             value = self.daily_bar_reader.spot_price(asset, dt, column)
             if value != -1:

@@ -503,10 +503,7 @@ class BcolzDailyBarReader(object):
         if price == 0:
             return -1
         if colname != 'volume':
-            if price != 0:
-                return self._spot_col(colname)[ix] * 0.001
-            else:
-                return nan
+            return price * 0.001
         else:
             return price
 
