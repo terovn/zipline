@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from zipline.assets import Asset, Future, Equity
-
+from zipline.data.us_equity_pricing import BcolzDailyBarReader
 from zipline.utils import tradingcalendar
 from zipline.errors import (
     NoTradeDataAvailableTooEarly,
@@ -133,6 +133,12 @@ class DataPortal(object):
         self.first_trading_minute = first_trading_minute
         self.index_of_first_trading_day = tradingcalendar.trading_days.\
             searchsorted(self.first_trading_day)
+
+        if self._daily_equities_path is not None:
+            self.daily_bar_reader = BcolzDailyBarReader(
+                self._daily_equities_path)
+        else:
+            self.daily_bar_reader = None
 
     def handle_extra_source(self, source_df):
         """
@@ -338,8 +344,12 @@ class DataPortal(object):
         self._check_is_currently_alive(asset, dt)
 
         if self._data_frequency == "daily":
-            day_to_use = dt or self.current_day
-            return self._get_daily_data(asset, column_to_use, day_to_use)
+            if dt is not None:
+                day_to_use = pd.Timestamp(dt.date(), tz='UTC')
+            else:
+                day_to_use = self.current_day
+            return self.daily_bar_reader.spot_price(
+                asset, day_to_use, column_to_use)
         else:
             dt_to_use = dt or self.current_dt
 
