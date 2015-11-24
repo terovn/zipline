@@ -448,6 +448,24 @@ class BcolzDailyBarReader(object):
             offsets,
         )
 
+    def load_raw_arrays2(self, columns, start_date, end_date, assets):
+        # Assumes that the given dates are actually in calendar.
+        start_idx = self._calendar.get_loc(start_date)
+        end_idx = self._calendar.get_loc(end_date)
+        first_rows, last_rows, offsets = self._compute_slices(
+            start_idx,
+            end_idx,
+            assets,
+        )
+        return _read_bcolz_data(
+            self._table,
+            (end_idx - start_idx + 1, len(assets)),
+            [column for column in columns],
+            first_rows,
+            last_rows,
+            offsets,
+        )
+
     def _spot_col(self, colname):
         """
         Get the colname from daily_bar_table and read all of it into memory,

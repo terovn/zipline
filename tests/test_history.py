@@ -1032,9 +1032,8 @@ class HistoryTestCase(TestCase):
             "open_price"
         )
 
-        for i in range(0, 22):
-            self.assertEqual(window_0402.iloc[i].loc[self.IBM],
-                             window_0702.iloc[i].loc[self.IBM] * 2)
+        np.testing.assert_almost_equal(window_0402[:22][self.IBM].values,
+                                       window_0702[:22][self.IBM].values * 2)
 
     def test_minute_dividends(self):
         def check(field, ref):

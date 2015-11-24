@@ -1002,15 +1002,11 @@ class DataPortal(object):
         nan.
 
         """
-        daily_data, daily_attrs = self._open_daily_file()
-
-        # the daily file stores each sid's daily OHLCV in a contiguous block.
-        # the first row per sid is either 1/2/2002, or the sid's start_date if
-        # it started after 1/2/2002.  once a sid stops trading, there are no
-        # rows for it.
-
         bar_count = len(days_in_window)
-
+        data = self.daily_bar_reader.load_raw_arrays2([field],
+                                                      days_in_window[0],
+                                                      days_in_window[-1],
+                                                      [asset])[0]
         # create an np.array of size bar_count
         if extra_slot:
             return_array = np.zeros((bar_count + 1,))
@@ -1020,59 +1016,13 @@ class DataPortal(object):
         return_array[:] = np.NAN
         sid = int(asset)
 
-        # find the start index in the daily file for this asset
-        asset_file_index = daily_attrs['first_row'][str(sid)]
-
-        trading_days = tradingcalendar.trading_days
-
-        # Calculate the starting day to use (either the asset's first trading
-        # day, or 1/1/2002 (which is the 3028th day in the trading calendar).
-        first_trading_day_to_use = max(trading_days.searchsorted(
-            self._asset_start_dates[asset]), self.index_of_first_trading_day)
-
-        # find the # of trading days between max(asset's first trade date,
-        # 2002-01-02) and start_dt
-        window_offset = (trading_days.searchsorted(days_in_window[0]) -
-                         first_trading_day_to_use)
-
-        start_index = max(asset_file_index, asset_file_index + window_offset)
-
-        if window_offset < 0 and (abs(window_offset) > bar_count):
-            # consumer is requesting a history window that starts AND ends
-            # before this equity started trading, so gtfo
-            return return_array
-
-        # find the end index in the daily file. make sure it doesn't extend
-        # past the end of this asset's data in the daily file.
-        if window_offset < 0:
-            # if the window_offset is negative, we need to decrease the
-            # end_index accordingly.
-            end_index = min(start_index + window_offset + bar_count,
-                            daily_attrs['last_row'][str(sid)] + 1)
-
-            # get data from bcolz file
-            data = daily_data[field][start_index:end_index]
-
-            # have to leave a bunch of empty slots at the beginning of
-            # return_array, since they represent days before this asset
-            # started trading.
-            return_array[abs(window_offset):bar_count] = data
-        else:
-            end_index = min(start_index + bar_count,
-                            daily_attrs['last_row'][str(sid)])
-            data = daily_data[field][start_index:(end_index + 1)]
-
-            if len(data) > len(return_array):
-                return_array[:] = data[0:len(return_array)]
-            else:
-                return_array[0:len(data)] = data
+        return_array[0:len(data)] = data[:, 0]
 
         self._apply_all_adjustments(
             return_array,
             sid,
             days_in_window,
             field,
-            self.DAILY_PRICE_ADJUSTMENT_FACTOR
         )
 
         return return_array
