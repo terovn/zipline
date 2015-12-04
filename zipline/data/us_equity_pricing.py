@@ -369,6 +369,7 @@ class BcolzDailyBarReader(object):
             table = ctable(rootdir=table, mode='r')
 
         self._table = table
+        self._carrays = {}
         self._calendar = DatetimeIndex(table.attrs['calendar'], tz='UTC')
         self._first_rows = {
             int(asset_id): start_index
@@ -443,8 +444,14 @@ class BcolzDailyBarReader(object):
             end_idx,
             assets,
         )
+        for column in columns:
+            name = column.name
+            try:
+                self._carrays[name]
+            except KeyError:
+                self._carrays[name] = self._table[name][:]
         return _read_bcolz_data(
-            self._table,
+            self._carrays,
             (end_idx - start_idx + 1, len(assets)),
             [column.name for column in columns],
             first_rows,

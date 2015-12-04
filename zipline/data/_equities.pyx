@@ -129,7 +129,7 @@ cpdef _compute_row_slices(dict asset_starts_absolute,
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cpdef _read_bcolz_data(ctable_t table,
+cpdef _read_bcolz_data(dict carrays,
                        tuple shape,
                        list columns,
                        intp_t[:] first_rows,
@@ -177,7 +177,7 @@ cpdef _read_bcolz_data(ctable_t table,
         raise ValueError("Incompatible index arrays.")
 
     for column_name in columns:
-        raw_data = table[column_name][:]
+        raw_data = carrays[column_name]
         outbuf = zeros(shape=shape, dtype=uint32)
         for asset in range(nassets):
             first_row = first_rows[asset]
