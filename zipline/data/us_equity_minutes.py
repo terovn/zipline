@@ -273,6 +273,6 @@ class BcolzMinuteBarReader(object):
             path = os.path.join(sid_path, field)
 
             carray = self._carrays[field][sid] = \
-                bcolz.open(path, mode='r')
+                bcolz.carray(rootdir=path, mode='r')
 
         return carray
