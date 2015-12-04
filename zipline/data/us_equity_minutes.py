@@ -237,9 +237,28 @@ class BcolzMinuteBarReader(object):
             'dt': {},
         }
 
+        # A lookup of table every minute to the corresponding day, to avoid
+        # calling `.date()` on every lookup.
+        self._minutes_to_day = {}
+        # A map of days (keyed by midnight) to a DatetimeIndex of market
+        # minutes for that day.
+        self._minutes_by_day = {}
+        # A dict of day to the offset into the minute bcolz on which that
+        # days data starts.
+        self._day_offsets = None
+
     def _get_metadata(self):
         with open(os.path.join(self.rootdir, METADATA_FILENAME)) as fp:
             return json.load(fp)
+
+    def _minute_offset(self, dt):
+        if self._day_offsets is not None:
+            try:
+                day = self._minutes_to_day[dt]
+                minutes = self._minutes_by_day[day]
+                return self._day_offsets[day] + minutes.get_loc(dt)
+            except KeyError:
+                return None
 
     def _get_carray(self, field, asset):
         sid = int(asset)
