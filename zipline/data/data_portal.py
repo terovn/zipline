@@ -456,7 +456,7 @@ class DataPortal(object):
 
             minute_offset_to_use = (day_index * 390) + minute_index
 
-        carray = self._open_minute_file(column, asset)
+        carray = self._equity_minute_reader._get_carray(column, asset)
         result = carray[minute_offset_to_use]
 
         if result == 0:

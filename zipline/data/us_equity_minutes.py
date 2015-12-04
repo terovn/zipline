@@ -4,6 +4,7 @@ from abc import (
 )
 import json
 import os
+import bcolz
 from bcolz import ctable
 from datetime import datetime
 import numpy as np
@@ -226,6 +227,33 @@ class BcolzMinuteBarReader(object):
         self.trading_days = tradingcalendar.trading_days[mask]
         self.sid_path_func = sid_path_func
 
+        self._carrays = {
+            'open': {},
+            'high': {},
+            'low': {},
+            'close': {},
+            'volume': {},
+            'sid': {},
+            'dt': {},
+        }
+
     def _get_metadata(self):
         with open(os.path.join(self.rootdir, METADATA_FILENAME)) as fp:
             return json.load(fp)
+
+    def _get_carray(self, field, asset):
+        sid = int(asset)
+        try:
+            carray = self._carrays[field][sid]
+        except KeyError:
+            if self.sid_path_func is not None:
+                sid_path = self.sid_path_func(self.rootdir, sid)
+            else:
+                sid_path = "{0}/{1}.bcolz".format(self.rootdir, sid)
+
+            path = os.path.join(sid_path, field)
+
+            carray = self._carrays[field][sid] = \
+                bcolz.open(path, mode='r')
+
+        return carray
