@@ -98,7 +98,7 @@ class AlgorithmSimulator(object):
             for date, snapshot in stream_in:
 
                 self.simulation_dt = date
-                self.on_dt_changed(date)
+                self.algo.on_dt_changed(date)
 
                 # If we're still in the warmup period.  Use the event to
                 # update our universe, but don't yield any perf messages,
@@ -149,10 +149,6 @@ class AlgorithmSimulator(object):
                         if next_day is not None and \
                            next_day < self.algo.perf_tracker.last_close:
                             self._call_before_trading_start(next_day)
-
-                    self.algo.portfolio_needs_update = True
-                    self.algo.account_needs_update = True
-                    self.algo.performance_needs_update = True
 
             risk_message = self.algo.perf_tracker.handle_simulation_end()
             yield risk_message
@@ -333,12 +329,8 @@ class AlgorithmSimulator(object):
     def _call_before_trading_start(self, dt):
         dt = normalize_date(dt)
         self.simulation_dt = dt
-        self.on_dt_changed(dt)
+        self.algo.on_dt_changed(dt)
         self.algo.before_trading_start(self.current_data)
-
-    def on_dt_changed(self, dt):
-        if self.algo.datetime != dt:
-            self.algo.on_dt_changed(dt)
 
     def generate_messages(self, dt):
         """

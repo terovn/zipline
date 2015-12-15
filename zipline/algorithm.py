@@ -251,9 +251,6 @@ class TradingAlgorithm(object):
         # symbols to sids, and can be set using set_symbol_lookup_date()
         self._symbol_lookup_date = None
 
-        self.portfolio_needs_update = True
-        self.account_needs_update = True
-        self.performance_needs_update = True
         self._portfolio = None
         self._account = None
 
@@ -468,10 +465,6 @@ class TradingAlgorithm(object):
             self.perf_tracker = PerformanceTracker(
                 sim_params=sim_params, env=self.trading_environment
             )
-
-        self.portfolio_needs_update = True
-        self.account_needs_update = True
-        self.performance_needs_update = True
 
         self.data_gen = self._create_data_generator(source_filter, sim_params)
 
@@ -998,11 +991,9 @@ class TradingAlgorithm(object):
         return self.updated_portfolio()
 
     def updated_portfolio(self):
-        if self.portfolio_needs_update:
+        if self._portfolio is None:
             self._portfolio = \
-                self.perf_tracker.get_portfolio(self.performance_needs_update)
-            self.portfolio_needs_update = False
-            self.performance_needs_update = False
+                self.perf_tracker.get_portfolio(self.datetime)
         return self._portfolio
 
     @property
@@ -1010,11 +1001,9 @@ class TradingAlgorithm(object):
         return self.updated_account()
 
     def updated_account(self):
-        if self.account_needs_update:
+        if self._account is None:
             self._account = \
-                self.perf_tracker.get_account(self.performance_needs_update)
-            self.account_needs_update = False
-            self.performance_needs_update = False
+                self.perf_tracker.get_account(self.datetime)
         return self._account
 
     def set_logger(self, logger):
@@ -1036,6 +1025,9 @@ class TradingAlgorithm(object):
         self.datetime = dt
         self.perf_tracker.set_date(dt)
         self.blotter.set_date(dt)
+
+        self._portfolio = None
+        self._account = None
 
     @api_method
     def get_datetime(self, tz=None):

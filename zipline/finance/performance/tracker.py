@@ -168,7 +168,6 @@ class PerformanceTracker(object):
         self.day_count = 0.0
         self.txn_count = 0
 
-        self.account_needs_update = True
         self._account = None
 
     def __repr__(self):
@@ -242,23 +241,12 @@ class PerformanceTracker(object):
         for perf_period in self.perf_periods:
             perf_period.calculate_performance()
 
-    def get_portfolio(self, performance_needs_update):
-        if performance_needs_update:
-            self.update_performance()
-            self.account_needs_update = True
+    def get_portfolio(self, dt):
         return self.cumulative_performance.as_portfolio()
 
-    def get_account(self, performance_needs_update):
-        if performance_needs_update:
-            self.update_performance()
-            self.account_needs_update = True
-        if self.account_needs_update:
-            self._update_account()
-        return self._account
-
-    def _update_account(self):
+    def get_account(self, dt):
         self._account = self.cumulative_performance.as_account()
-        self.account_needs_update = False
+        return self._account
 
     def to_dict(self, emission_type=None):
         """
