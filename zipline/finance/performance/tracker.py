@@ -163,8 +163,6 @@ class PerformanceTracker(object):
         self.day_count = 0.0
         self.txn_count = 0
 
-        self._account = None
-
     def __repr__(self):
         return "%s(%r)" % (
             self.__class__.__name__,
@@ -198,9 +196,8 @@ class PerformanceTracker(object):
         pos_stats = self.position_tracker.stats()
         period_stats = self.cumulative_performance.stats(
             self.position_tracker.positions, pos_stats)
-        self._account = self.cumulative_performance.as_account(
+        return self.cumulative_performance.as_account(
             pos_stats, period_stats)
-        return self._account
 
     def update_dividends(self, new_dividends):
         """
@@ -430,7 +427,7 @@ class PerformanceTracker(object):
         for event in auto_close_events:
             self.process_close_position(event)
 
-    def handle_minute_close(self, dt):
+    def handle_minute_close(self, dt, account=None):
         """
         Handles the close of the given minute. This includes handling
         market-close functions if the given minute is the end of the market
@@ -448,7 +445,6 @@ class PerformanceTracker(object):
             If the market day has not ended, the daily perf packet is None.
         """
         todays_date = normalize_date(dt)
-        account = self.get_account(dt)
 
         bench_returns = self.all_benchmark_returns.loc[todays_date:dt]
         # cumulative returns
@@ -461,10 +457,15 @@ class PerformanceTracker(object):
         todays_stats = self.todays_performance.stats(
             self.position_tracker.positions, pos_stats
         )
+        if account is not None:
+            leverage = account.leverage
+        else:
+            leverage = cumulative_stats.gross_leverage
+
         self.cumulative_risk_metrics.update(todays_date,
                                             todays_stats.returns,
                                             bench_since_open,
-                                            account)
+                                            leverage)
 
         minute_packet = self._to_dict(pos_stats,
                                       cumulative_stats,
@@ -480,7 +481,7 @@ class PerformanceTracker(object):
         else:
             return minute_packet, None
 
-    def handle_market_close_daily(self, dt):
+    def handle_market_close_daily(self, dt, account=None):
         """
         Function called after handle_data when running with daily emission
         rate.
@@ -491,16 +492,23 @@ class PerformanceTracker(object):
         todays_stats = self.todays_performance.stats(
             self.position_tracker.positions, pos_stats
         )
-        account = self.get_account(completed_date)
+        cumulative_stats = self.cumulative_performance.stats(
+            self.position_tracker.positions, pos_stats
+        )
 
         # update risk metrics for cumulative performance
         benchmark_value = self.all_benchmark_returns[completed_date]
+
+        if account is not None:
+            leverage = account.leverage
+        else:
+            leverage = cumulative_stats.gross_leverage
 
         self.cumulative_risk_metrics.update(
             completed_date,
             todays_stats.returns,
             benchmark_value,
-            account)
+            leverage)
 
         daily_packet = self._handle_market_close(completed_date,
                                                  pos_stats,

@@ -343,13 +343,15 @@ class AlgorithmSimulator(object):
         # Ensure that updated_portfolio has been called at least once for this
         # dt before we emit a perf message.  This is a no-op if
         # updated_portfolio has already been called this dt.
-        self.algo.updated_portfolio()
-        self.algo.updated_account()
+        if self.algo.use_account_for_leverage:
+            account = self.algo.updated_account()
+        else:
+            account = None
 
         rvars = self.algo.recorded_vars
         if self.algo.perf_tracker.emission_rate == 'daily':
             perf_message = \
-                self.algo.perf_tracker.handle_market_close_daily(dt)
+                self.algo.perf_tracker.handle_market_close_daily(dt, account)
             perf_message['daily_perf']['recorded_vars'] = rvars
             yield perf_message
 
@@ -357,7 +359,7 @@ class AlgorithmSimulator(object):
             # close the minute in the tracker, and collect the daily message if
             # the minute is the close of the trading day
             minute_message, daily_message = \
-                self.algo.perf_tracker.handle_minute_close(dt)
+                self.algo.perf_tracker.handle_minute_close(dt, account)
 
             # collect and yield the minute's perf message
             minute_message['minute_perf']['recorded_vars'] = rvars
