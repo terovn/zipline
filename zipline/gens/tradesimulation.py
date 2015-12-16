@@ -344,6 +344,7 @@ class AlgorithmSimulator(object):
         # Ensure that updated_portfolio has been called at least once for this
         # dt before we emit a perf message.  This is a no-op if
         # updated_portfolio has already been called this dt.
+        self.algo.updated_portfolio()
         if self.use_account_for_perf:
             account = self.algo.updated_account()
         else:
