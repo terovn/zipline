@@ -70,6 +70,7 @@ from pandas.tseries.tools import normalize_date
 import zipline.finance.risk as risk
 from . period import PerformancePeriod
 
+from zipline.utils.memoize import remember_last
 from zipline.utils.serialization_utils import (
     VERSION_LABEL
 )
@@ -181,6 +182,7 @@ class PerformanceTracker(object):
             self.saved_dt = date
             self.todays_performance.period_close = self.saved_dt
 
+    @remember_last
     def get_portfolio(self, dt):
         position_tracker = self.position_tracker
         pos_stats = position_tracker.stats()
@@ -247,14 +249,11 @@ class PerformanceTracker(object):
             self.dividend_frame.sid != sid
         ]
 
-    def to_dict(self, emission_type=None):
+    def to_dict(self, pos_stats, todays_stats, emission_type=None):
         """
         Wrapper for serialization compatibility.
         """
-        pos_stats = self.position_tracker.stats()
         cumulative_stats = self.cumulative_performance.stats(
-            self.position_tracker.positions, pos_stats)
-        todays_stats = self.todays_performance.stats(
             self.position_tracker.positions, pos_stats)
 
         return self._to_dict(pos_stats,
@@ -532,7 +531,8 @@ class PerformanceTracker(object):
 
         # Take a snapshot of our current performance to return to the
         # browser.
-        daily_update = self.to_dict(emission_type='daily')
+        daily_update = self.to_dict(pos_stats, todays_stats,
+                                    emission_type='daily')
 
         # On the last day of the test, don't create tomorrow's performance
         # period.  We may not be able to find the next trading day if we're at
