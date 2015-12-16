@@ -165,16 +165,18 @@ class PerformancePeriod(object):
         self.period_open = period_open
         self.period_close = period_close
 
-        self.ending_value = 0.0
-        self.ending_exposure = 0.0
         self.period_cash_flow = 0.0
-        self.pnl = 0.0
 
-        self.ending_cash = starting_cash
-        # rollover initializes a number of self's attributes:
-        self.rollover()
+        self.starting_cash = starting_cash
+        self.starting_value = 0.0
+        self.starting_exposure = 0.0
+
         self.keep_transactions = keep_transactions
         self.keep_orders = keep_orders
+
+        self.processed_transactions = {}
+        self.orders_by_modified = {}
+        self.orders_by_id = OrderedDict()
 
         # An object to recycle via assigning new values
         # when returning portfolio information.
@@ -187,26 +189,11 @@ class PerformancePeriod(object):
         # keyed on sid
         self._execution_cash_flow_multipliers = {}
 
-    _position_tracker = None
-
-    @property
-    def position_tracker(self):
-        return self._position_tracker
-
-    @position_tracker.setter
-    def position_tracker(self, obj):
-        if obj is None:
-            raise ValueError("position_tracker can not be None")
-        self._position_tracker = obj
-        # we only calculate perf once we inject PositionTracker
-        self.calculate_performance()
-
-    def rollover(self):
-        self.starting_value = self.ending_value
-        self.starting_exposure = self.ending_exposure
-        self.starting_cash = self.ending_cash
+    def rollover(self, pos_stats, prev_period_stats):
+        self.starting_value = pos_stats.net_value
+        self.starting_exposure = pos_stats.net_exposure
+        self.starting_cash = prev_period_stats.ending_cash
         self.period_cash_flow = 0.0
-        self.pnl = 0.0
         self.processed_transactions = {}
         self.orders_by_modified = {}
         self.orders_by_id = OrderedDict()
@@ -214,7 +201,6 @@ class PerformancePeriod(object):
     def handle_dividends_paid(self, net_cash_payment):
         if net_cash_payment:
             self.handle_cash_payment(net_cash_payment)
-        self.calculate_performance()
 
     def handle_cash_payment(self, payment_amount):
         self.adjust_cash(payment_amount)
@@ -228,22 +214,6 @@ class PerformancePeriod(object):
 
     def adjust_field(self, field, value):
         setattr(self, field, value)
-
-    def calculate_performance(self):
-        pt = self.position_tracker
-        pos_stats = pt.stats()
-        self.ending_value = pos_stats.net_value
-        self.ending_exposure = pos_stats.net_exposure
-
-        total_at_start = self.starting_cash + self.starting_value
-        self.ending_cash = self.starting_cash + self.period_cash_flow
-        total_at_end = self.ending_cash + self.ending_value
-
-        self.pnl = total_at_end - total_at_start
-        if total_at_start != 0:
-            self.returns = self.pnl / total_at_start
-        else:
-            self.returns = 0.0
 
     def record_order(self, order):
         if self.keep_orders:
@@ -298,15 +268,6 @@ class PerformancePeriod(object):
             self.period_cash_flow,
             0.0,
         )
-
-    # backwards compat. TODO: remove?
-    @property
-    def positions(self):
-        return self.position_tracker.positions
-
-    @property
-    def position_amounts(self):
-        return self.position_tracker.position_amounts
 
     def __core_dict(self, pos_stats, period_stats):
         rval = {
@@ -380,7 +341,7 @@ class PerformancePeriod(object):
 
         return rval
 
-    def as_portfolio(self):
+    def as_portfolio(self, pos_stats, period_stats, position_tracker, dt):
         """
         The purpose of this method is to provide a portfolio
         object to algorithms running inside the same trading
@@ -397,14 +358,14 @@ class PerformancePeriod(object):
         # backward compatibility
         portfolio.capital_used = self.period_cash_flow
         portfolio.starting_cash = self.starting_cash
-        portfolio.portfolio_value = self.ending_cash + self.ending_value
-        portfolio.pnl = self.pnl
-        portfolio.returns = self.returns
-        portfolio.cash = self.ending_cash
+        portfolio.portfolio_value = period_stats.portfolio_value
+        portfolio.pnl = period_stats.pnl
+        portfolio.returns = period_stats.returns
+        portfolio.cash = period_stats.ending_cash
         portfolio.start_date = self.period_open
-        portfolio.positions = self.position_tracker.get_positions()
-        portfolio.positions_value = self.ending_value
-        portfolio.positions_exposure = self.ending_exposure
+        portfolio.positions = position_tracker.get_positions()
+        portfolio.positions_value = pos_stats.net_value
+        portfolio.positions_exposure = pos_stats.net_exposure
         return portfolio
 
     def as_account(self, pos_stats, period_stats):

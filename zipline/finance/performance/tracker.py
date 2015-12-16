@@ -184,6 +184,25 @@ class PerformanceTracker(object):
             self.saved_dt = date
             self.todays_performance.period_close = self.saved_dt
 
+    def get_portfolio(self, dt):
+        position_tracker = self.position_tracker
+        pos_stats = position_tracker.stats()
+        period_stats = self.cumulative_performance.stats(
+            position_tracker.positions, pos_stats)
+        return self.cumulative_performance.as_portfolio(
+            pos_stats,
+            period_stats,
+            position_tracker,
+            dt)
+
+    def get_account(self, dt):
+        pos_stats = self.position_tracker.stats()
+        period_stats = self.cumulative_performance.stats(
+            self.position_tracker.positions, pos_stats)
+        self._account = self.cumulative_performance.as_account(
+            pos_stats, period_stats)
+        return self._account
+
     def update_dividends(self, new_dividends):
         """
         Update our dividend frame with new dividends.  @new_dividends should be
@@ -232,32 +251,13 @@ class PerformanceTracker(object):
             self.dividend_frame.sid != sid
         ]
 
-    def update_performance(self):
-        # calculate performance as of last trade
-        self.cumulative_performance.calculate_performance()
-        self.todays_performance.calculate_performance()
-
-    def get_portfolio(self, performance_needs_update):
-        if performance_needs_update:
-            self.update_performance()
-            self.account_needs_update = True
-        return self.cumulative_performance.as_portfolio()
-
-    def get_account(self, performance_needs_update):
-        if performance_needs_update:
-            self.update_performance()
-            self.account_needs_update = True
-        if self.account_needs_update:
-            self._update_account()
-        return self._account
-
     def _update_account(self):
         pos_stats = self.position_tracker.stats()
         period_stats = self.cumulative_performance.stats(
             self.position_tracker.positions, pos_stats)
         self._account = self.cumulative_performance.as_account(
             pos_stats, period_stats)
-        self.account_needs_update = False
+        return self._account
 
     def to_dict(self, emission_type=None):
         """
@@ -456,47 +456,68 @@ class PerformanceTracker(object):
             A tuple of the minute perf packet and daily perf packet.
             If the market day has not ended, the daily perf packet is None.
         """
-        self.update_performance()
         todays_date = normalize_date(dt)
-        account = self.get_account(False)
+        account = self.get_account(dt)
 
         bench_returns = self.all_benchmark_returns.loc[todays_date:dt]
         # cumulative returns
         bench_since_open = (1. + bench_returns).prod() - 1
 
+        pos_stats = self.position_tracker.stats()
+        cumulative_stats = self.cumulative_performance.stats(
+            self.position_tracker.positions, pos_stats
+        )
+        todays_stats = self.todays_performance.stats(
+            self.position_tracker.positions, pos_stats
+        )
         self.cumulative_risk_metrics.update(todays_date,
-                                            self.todays_performance.returns,
+                                            todays_stats.returns,
                                             bench_since_open,
                                             account)
 
-        minute_packet = self.to_dict(emission_type='minute')
+        minute_packet = self._to_dict(pos_stats,
+                                      cumulative_stats,
+                                      todays_stats,
+                                      emission_type='minute')
 
-        # if this is the close, update dividends for the next day.
-        # Return the performance tuple
         if dt == self.market_close:
-            return (minute_packet, self._handle_market_close(todays_date))
+            # if this is the last minute of the day, we also want to
+            # emit a daily packet.
+            return minute_packet, self._handle_market_close(todays_date,
+                                                            pos_stats,
+                                                            todays_stats)
         else:
-            return (minute_packet, None)
+            return minute_packet, None
 
-    def handle_market_close_daily(self):
+    def handle_market_close_daily(self, dt):
         """
         Function called after handle_data when running with daily emission
         rate.
         """
-        self.update_performance()
-        completed_date = self.day
-        account = self.get_account(False)
+        completed_date = normalize_date(dt)
+
+        pos_stats = self.position_tracker.stats()
+        todays_stats = self.todays_performance.stats(
+            self.position_tracker.positions, pos_stats
+        )
+        account = self.get_account(completed_date)
 
         # update risk metrics for cumulative performance
+        benchmark_value = self.all_benchmark_returns[completed_date]
+
         self.cumulative_risk_metrics.update(
             completed_date,
-            self.todays_performance.returns,
-            self.all_benchmark_returns[completed_date],
+            todays_stats.returns,
+            benchmark_value,
             account)
 
-        return self._handle_market_close(completed_date)
+        daily_packet = self._handle_market_close(completed_date,
+                                                 pos_stats,
+                                                 todays_stats)
 
-    def _handle_market_close(self, completed_date):
+        return daily_packet
+
+    def _handle_market_close(self, completed_date, pos_stats, todays_stats):
 
         # increment the day counter before we move markers forward.
         self.day_count += 1.0
@@ -526,7 +547,7 @@ class PerformanceTracker(object):
         self.day = self.env.next_trading_day(self.day)
 
         # Roll over positions to current day.
-        self.todays_performance.rollover()
+        self.todays_performance.rollover(pos_stats, todays_stats)
         self.todays_performance.period_open = self.market_open
         self.todays_performance.period_close = self.market_close
 
