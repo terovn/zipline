@@ -7,7 +7,6 @@ import pandas as pd
 
 from zipline.finance.blotter import Blotter, Order
 from zipline.finance.commission import PerShare, PerTrade, PerDollar
-from zipline.finance.performance.period import PerformancePeriod
 from zipline.finance.performance.position import Position
 from zipline.finance.performance.tracker import PerformanceTracker
 from zipline.finance.performance.position_tracker import PositionTracker
@@ -66,10 +65,6 @@ def object_serialization_cases(skip_daily=False):
         (PerShare, (), {}, 'dict'),
         (PerTrade, (), {}, 'dict'),
         (PerDollar, (), {}, 'dict'),
-        (PerformancePeriod,
-            (10000, cases_env.asset_finder),
-            {'position_tracker': PositionTracker(cases_env.asset_finder)},
-            'to_dict'),
         (Position, (8554,), {}, 'dict'),
         (PositionTracker, (cases_env.asset_finder,), {}, 'dict'),
         (PerformanceTracker, (sim_params_minute, cases_env), {}, 'to_dict'),

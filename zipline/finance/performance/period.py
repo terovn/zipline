@@ -91,7 +91,6 @@ import zipline.protocol as zp
 from zipline.utils.serialization_utils import (
     VERSION_LABEL
 )
-from zipline.finance.performance.position_tracker import calc_position_stats
 
 log = logbook.Logger('Performance')
 TRADE_TYPE = zp.DATASOURCE_TYPE.TRADE
@@ -100,7 +99,11 @@ TRADE_TYPE = zp.DATASOURCE_TYPE.TRADE
 PeriodStats = namedtuple('PeriodStats',
                          ['net_liquidation',
                           'gross_leverage',
-                          'net_leverage'])
+                          'net_leverage',
+                          'ending_cash',
+                          'pnl',
+                          'returns',
+                          'portfolio_value'])
 
 
 def calc_net_liquidation(ending_cash, long_value, short_value):
@@ -114,7 +117,20 @@ def calc_leverage(exposure, net_liq):
     return np.inf
 
 
-def calc_period_stats(pos_stats, ending_cash):
+def calc_period_stats(pos_stats, starting_cash, starting_value,
+                      period_cash_flow, payout):
+    total_at_start = starting_cash + starting_value
+    ending_cash = starting_cash + period_cash_flow + payout
+    total_at_end = ending_cash + pos_stats.net_value
+
+    pnl = total_at_end - total_at_start
+    if total_at_start != 0:
+        returns = pnl / total_at_start
+    else:
+        returns = 0.0
+
+    portfolio_value = ending_cash + pos_stats.net_value + payout
+
     net_liq = calc_net_liquidation(ending_cash,
                                    pos_stats.long_value,
                                    pos_stats.short_value)
@@ -124,7 +140,12 @@ def calc_period_stats(pos_stats, ending_cash):
     return PeriodStats(
         net_liquidation=net_liq,
         gross_leverage=gross_leverage,
-        net_leverage=net_leverage)
+        net_leverage=net_leverage,
+        ending_cash=ending_cash,
+        pnl=pnl,
+        returns=returns,
+        portfolio_value=portfolio_value
+    )
 
 
 class PerformancePeriod(object):
@@ -210,7 +231,7 @@ class PerformancePeriod(object):
 
     def calculate_performance(self):
         pt = self.position_tracker
-        pos_stats = calc_position_stats(pt)
+        pos_stats = pt.stats()
         self.ending_value = pos_stats.net_value
         self.ending_exposure = pos_stats.net_exposure
 
@@ -269,6 +290,15 @@ class PerformancePeriod(object):
         # Calculate and return the cash flow given the multiplier
         return -1 * txn.price * txn.amount * multiplier
 
+    def stats(self, positions, pos_stats):
+        return calc_period_stats(
+            pos_stats,
+            self.starting_cash,
+            self.starting_value,
+            self.period_cash_flow,
+            0.0,
+        )
+
     # backwards compat. TODO: remove?
     @property
     def positions(self):
@@ -278,23 +308,20 @@ class PerformancePeriod(object):
     def position_amounts(self):
         return self.position_tracker.position_amounts
 
-    def __core_dict(self):
-        pos_stats = calc_position_stats(self.position_tracker)
-        period_stats = calc_period_stats(pos_stats, self.ending_cash)
-
+    def __core_dict(self, pos_stats, period_stats):
         rval = {
-            'ending_value': self.ending_value,
-            'ending_exposure': self.ending_exposure,
+            'ending_value': pos_stats.net_value,
+            'ending_exposure': pos_stats.net_exposure,
             # this field is renamed to capital_used for backward
             # compatibility.
             'capital_used': self.period_cash_flow,
             'starting_value': self.starting_value,
             'starting_exposure': self.starting_exposure,
             'starting_cash': self.starting_cash,
-            'ending_cash': self.ending_cash,
-            'portfolio_value': self.ending_cash + self.ending_value,
-            'pnl': self.pnl,
-            'returns': self.returns,
+            'ending_cash': period_stats.ending_cash,
+            'portfolio_value': period_stats.portfolio_value,
+            'pnl': period_stats.pnl,
+            'returns': period_stats.returns,
             'period_open': self.period_open,
             'period_close': self.period_close,
             'gross_leverage': period_stats.gross_leverage,
@@ -309,7 +336,7 @@ class PerformancePeriod(object):
 
         return rval
 
-    def to_dict(self, dt=None):
+    def to_dict(self, pos_stats, period_stats, position_tracker, dt=None):
         """
         Creates a dictionary representing the state of this performance
         period. See header comments for a detailed description.
@@ -317,10 +344,10 @@ class PerformancePeriod(object):
         Kwargs:
             dt (datetime): If present, only return transactions for the dt.
         """
-        rval = self.__core_dict()
+        rval = self.__core_dict(pos_stats, period_stats)
 
         if self.serialize_positions:
-            positions = self.position_tracker.get_positions_list()
+            positions = position_tracker.get_positions_list()
             rval['positions'] = positions
 
         # we want the key to be absent, not just empty
@@ -380,12 +407,8 @@ class PerformancePeriod(object):
         portfolio.positions_exposure = self.ending_exposure
         return portfolio
 
-    def as_account(self):
+    def as_account(self, pos_stats, period_stats):
         account = self._account_store
-
-        pt = self.position_tracker
-        pos_stats = calc_position_stats(pt)
-        period_stats = calc_period_stats(pos_stats, self.ending_cash)
 
         # If no attribute is found on the PerformancePeriod resort to the
         # following default values. If an attribute is found use the existing
@@ -393,20 +416,19 @@ class PerformancePeriod(object):
         # attributes. In this case we do not want to over write the broker
         # values with the default values.
         account.settled_cash = \
-            getattr(self, 'settled_cash', self.ending_cash)
+            getattr(self, 'settled_cash', period_stats.ending_cash)
         account.accrued_interest = \
             getattr(self, 'accrued_interest', 0.0)
         account.buying_power = \
             getattr(self, 'buying_power', float('inf'))
         account.equity_with_loan = \
-            getattr(self, 'equity_with_loan',
-                    self.ending_cash + self.ending_value)
+            getattr(self, 'equity_with_loan', period_stats.portfolio_value)
         account.total_positions_value = \
-            getattr(self, 'total_positions_value', self.ending_value)
+            getattr(self, 'total_positions_value', pos_stats.net_value)
         account.total_positions_value = \
-            getattr(self, 'total_positions_exposure', self.ending_exposure)
+            getattr(self, 'total_positions_exposure', pos_stats.net_exposure)
         account.regt_equity = \
-            getattr(self, 'regt_equity', self.ending_cash)
+            getattr(self, 'regt_equity', period_stats.ending_cash)
         account.regt_margin = \
             getattr(self, 'regt_margin', float('inf'))
         account.initial_margin_requirement = \
@@ -414,12 +436,12 @@ class PerformancePeriod(object):
         account.maintenance_margin_requirement = \
             getattr(self, 'maintenance_margin_requirement', 0.0)
         account.available_funds = \
-            getattr(self, 'available_funds', self.ending_cash)
+            getattr(self, 'available_funds', period_stats.ending_cash)
         account.excess_liquidity = \
-            getattr(self, 'excess_liquidity', self.ending_cash)
+            getattr(self, 'excess_liquidity', period_stats.ending_cash)
         account.cushion = \
             getattr(self, 'cushion',
-                    self.ending_cash / (self.ending_cash + self.ending_value))
+                    period_stats.ending_cash / period_stats.portfolio_value)
         account.day_trades_remaining = \
             getattr(self, 'day_trades_remaining', float('inf'))
         account.leverage = getattr(self, 'leverage',

@@ -35,7 +35,6 @@ from six.moves import range, zip
 
 import zipline.utils.factory as factory
 import zipline.finance.performance as perf
-from zipline.finance.performance import position_tracker
 from zipline.finance.transaction import Transaction, create_transaction
 import zipline.utils.math_utils as zp_math
 
@@ -64,6 +63,7 @@ if not hasattr(nt, 'assert_count_equal'):
 
 
 def check_perf_period(pp,
+                      pt,
                       gross_leverage,
                       net_leverage,
                       long_exposure,
@@ -71,7 +71,9 @@ def check_perf_period(pp,
                       short_exposure,
                       shorts_count):
 
-    perf_data = pp.to_dict()
+    pos_stats = pt.stats()
+    pp_stats = pp.stats(pt.positions, pos_stats)
+    perf_data = pp.to_dict(pos_stats, pp_stats, pt)
     np.testing.assert_allclose(
         gross_leverage, perf_data['gross_leverage'], rtol=1e-3)
     np.testing.assert_allclose(
@@ -1060,14 +1062,18 @@ class TestPositionPerformance(unittest.TestCase):
 
         check_perf_period(
             pp,
+            pt,
             gross_leverage=2.0,
             net_leverage=0.0,
             long_exposure=1000.0,
             longs_count=1,
             short_exposure=-1000.0,
             shorts_count=1)
+
+        pos_stats = pt.stats()
+        pp_stats = pp.stats(pt.positions, pos_stats)
         # Validate that the account attributes were updated.
-        account = pp.as_account()
+        account = pp.as_account(pos_stats, pp_stats)
         check_account(account,
                       settled_cash=1000.0,
                       equity_with_loan=1000.0,
@@ -1087,11 +1093,14 @@ class TestPositionPerformance(unittest.TestCase):
 
         pp.calculate_performance()
 
+        pos_stats = pt.stats()
+        pp_stats = pp.stats(pt.positions, pos_stats)
         # Validate that the account attributes were updated.
-        account = pp.as_account()
+        account = pp.as_account(pos_stats, pp_stats)
 
         check_perf_period(
             pp,
+            pt,
             gross_leverage=2.5,
             net_leverage=-0.25,
             long_exposure=900.0,
@@ -1141,6 +1150,7 @@ class TestPositionPerformance(unittest.TestCase):
 
         check_perf_period(
             pp,
+            pt,
             gross_leverage=10.0,
             net_leverage=10.0,
             long_exposure=10000.0,
@@ -1148,8 +1158,10 @@ class TestPositionPerformance(unittest.TestCase):
             short_exposure=0.0,
             shorts_count=0)
 
+        pos_stats = pt.stats()
+        pp_stats = pp.stats(pt.positions, pos_stats)
         # Validate that the account attributes were updated.
-        account = pp.as_account()
+        account = pp.as_account(pos_stats, pp_stats)
         check_account(account,
                       settled_cash=-9000.0,
                       equity_with_loan=1000.0,
@@ -1169,6 +1181,7 @@ class TestPositionPerformance(unittest.TestCase):
 
         check_perf_period(
             pp,
+            pt,
             gross_leverage=5.5,
             net_leverage=5.5,
             long_exposure=11000.0,
@@ -1176,9 +1189,10 @@ class TestPositionPerformance(unittest.TestCase):
             short_exposure=0.0,
             shorts_count=0)
 
+        pos_stats = pt.stats()
+        pp_stats = pp.stats(pt.positions, pos_stats)
         # Validate that the account attributes were updated.
-        account = pp.as_account()
-
+        account = pp.as_account(pos_stats, pp_stats)
         check_account(account,
                       settled_cash=-9000.0,
                       equity_with_loan=2000.0,
@@ -1277,6 +1291,7 @@ class TestPositionPerformance(unittest.TestCase):
 
         check_perf_period(
             pp,
+            pt,
             gross_leverage=1.0,
             net_leverage=1.0,
             long_exposure=1100.0,
@@ -1284,8 +1299,10 @@ class TestPositionPerformance(unittest.TestCase):
             short_exposure=0.0,
             shorts_count=0)
 
+        pos_stats = pt.stats()
+        pp_stats = pp.stats(pt.positions, pos_stats)
         # Validate that the account attributes were updated.
-        account = pp.as_account()
+        account = pp.as_account(pos_stats, pp_stats)
         check_account(account,
                       settled_cash=0.0,
                       equity_with_loan=1100.0,
@@ -1496,6 +1513,7 @@ cost of sole txn in test"
 
         check_perf_period(
             pp,
+            pt,
             gross_leverage=0.8181,
             net_leverage=-0.8181,
             long_exposure=0.0,
@@ -1503,8 +1521,10 @@ cost of sole txn in test"
             short_exposure=-900.0,
             shorts_count=1)
 
+        pos_stats = pt.stats()
+        pp_stats = pp.stats(pt.positions, pos_stats)
         # Validate that the account attributes.
-        account = ppTotal.as_account()
+        account = pp.as_account(pos_stats, pp_stats)
         check_account(account,
                       settled_cash=2000.0,
                       equity_with_loan=1100.0,
@@ -1605,6 +1625,7 @@ shares in position"
 
         check_perf_period(
             pp,
+            pt,
             gross_leverage=0.0,
             net_leverage=0.0,
             long_exposure=0.0,
@@ -1612,7 +1633,9 @@ shares in position"
             short_exposure=0.0,
             shorts_count=0)
 
-        account = pp.as_account()
+        pos_stats = pt.stats()
+        pp_stats = pp.stats(pt.positions, pos_stats)
+        account = pp.as_account(pos_stats, pp_stats)
         check_account(account,
                       settled_cash=1300.0,
                       equity_with_loan=1300.0,
@@ -2209,7 +2232,7 @@ class TestPositionTracker(unittest.TestCase):
         np.bool_(False)
         """
         pt = perf.PositionTracker(self.env.asset_finder)
-        pos_stats = position_tracker.calc_position_stats(pt)
+        pos_stats = pt.stats()
 
         stats = [
             'net_value',
@@ -2263,7 +2286,7 @@ class TestPositionTracker(unittest.TestCase):
 
         # Test long-only methods
 
-        pos_stats = position_tracker.calc_position_stats(pt)
+        pos_stats = pt.stats()
         self.assertEqual(100, pos_stats.long_value)
         self.assertEqual(100 + 300000, pos_stats.long_exposure)
         self.assertEqual(2, pos_stats.longs_count)

@@ -252,31 +252,62 @@ class PerformanceTracker(object):
         return self._account
 
     def _update_account(self):
-        self._account = self.cumulative_performance.as_account()
+        pos_stats = self.position_tracker.stats()
+        period_stats = self.cumulative_performance.stats(
+            self.position_tracker.positions, pos_stats)
+        self._account = self.cumulative_performance.as_account(
+            pos_stats, period_stats)
         self.account_needs_update = False
 
     def to_dict(self, emission_type=None):
         """
+        Wrapper for serialization compatibility.
+        """
+        pos_stats = self.position_tracker.stats()
+        cumulative_stats = self.cumulative_performance.stats(
+            self.position_tracker.positions, pos_stats)
+        todays_stats = self.todays_performance.stats(
+            self.position_tracker.positions, pos_stats)
+
+        return self._to_dict(pos_stats,
+                             cumulative_stats,
+                             todays_stats,
+                             emission_type)
+
+    def _to_dict(self, pos_stats, cumulative_stats, todays_stats,
+                 emission_type=None):
+        """
         Creates a dictionary representing the state of this tracker.
         Returns a dict object of the form described in header comments.
-        """
 
+        Use this method internally, when stats are available.
+        """
         # Default to the emission rate of this tracker if no type is provided
         if emission_type is None:
             emission_type = self.emission_rate
+
+        position_tracker = self.position_tracker
 
         _dict = {
             'period_start': self.period_start,
             'period_end': self.period_end,
             'capital_base': self.capital_base,
-            'cumulative_perf': self.cumulative_performance.to_dict(),
+            'cumulative_perf': self.cumulative_performance.to_dict(
+                pos_stats, cumulative_stats, position_tracker,
+            ),
             'progress': self.progress,
             'cumulative_risk_metrics': self.cumulative_risk_metrics.to_dict()
         }
         if emission_type == 'daily':
-            _dict['daily_perf'] = self.todays_performance.to_dict()
+            _dict['daily_perf'] = self.todays_performance.to_dict(
+                pos_stats,
+                todays_stats,
+                position_tracker)
         elif emission_type == 'minute':
             _dict['minute_perf'] = self.todays_performance.to_dict(
+                pos_stats,
+                todays_stats,
+                position_tracker,
                 self.saved_dt)
         else:
             raise ValueError("Invalid emission type: %s" % emission_type)
