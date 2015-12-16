@@ -250,14 +250,6 @@ class PerformanceTracker(object):
             self.dividend_frame.sid != sid
         ]
 
-    def _update_account(self):
-        pos_stats = self.position_tracker.stats()
-        period_stats = self.cumulative_performance.stats(
-            self.position_tracker.positions, pos_stats)
-        self._account = self.cumulative_performance.as_account(
-            pos_stats, period_stats)
-        return self._account
-
     def to_dict(self, emission_type=None):
         """
         Wrapper for serialization compatibility.

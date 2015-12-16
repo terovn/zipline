@@ -150,10 +150,6 @@ class AlgorithmSimulator(object):
                            next_day < self.algo.perf_tracker.last_close:
                             self._call_before_trading_start(next_day)
 
-                    self.algo.portfolio_needs_update = True
-                    self.algo.account_needs_update = True
-                    self.algo.performance_needs_update = True
-
             risk_message = self.algo.perf_tracker.handle_simulation_end()
             yield risk_message
 
