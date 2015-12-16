@@ -163,7 +163,6 @@ class PerformanceTracker(object):
         self.day_count = 0.0
         self.txn_count = 0
 
-        self.account_needs_update = True
         self._account = None
 
     def __repr__(self):
