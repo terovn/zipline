@@ -320,7 +320,7 @@ class TradingAlgorithm(object):
 
         self._most_recent_data = None
 
-        self.use_account_for_leverage = False
+        self.use_account_for_perf = False
 
         # Prepare the algo for initialization
         self.initialized = False

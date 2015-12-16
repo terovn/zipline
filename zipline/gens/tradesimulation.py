@@ -49,6 +49,7 @@ class AlgorithmSimulator(object):
         # Algo Setup
         # ==============
         self.algo = algo
+        self.use_account_for_perf = self.algo.use_account_for_perf
         self.algo_start = normalize_date(self.sim_params.first_open)
         self.env = algo.trading_environment
 
@@ -343,7 +344,7 @@ class AlgorithmSimulator(object):
         # Ensure that updated_portfolio has been called at least once for this
         # dt before we emit a perf message.  This is a no-op if
         # updated_portfolio has already been called this dt.
-        if self.algo.use_account_for_leverage:
+        if self.use_account_for_perf:
             account = self.algo.updated_account()
         else:
             account = None
