@@ -2,12 +2,6 @@
 Technical Analysis Factors
 --------------------------
 """
-from bottleneck import (
-    nanargmax,
-    nanmax,
-    nanmean,
-    nansum,
-)
 from numbers import Number
 from numpy import (
     abs,
@@ -29,8 +23,14 @@ from numexpr import evaluate
 
 from zipline.pipeline.data import USEquityPricing
 from zipline.pipeline.mixins import SingleInputMixin
-from zipline.utils.control_flow import ignore_nanwarnings
+from zipline.utils.numpy_utils import ignore_nanwarnings
 from zipline.utils.input_validation import expect_types
+from zipline.utils.math_utils import (
+    nanargmax,
+    nanmax,
+    nanmean,
+    nansum,
+)
 from .factor import CustomFactor
 
 
@@ -130,12 +130,18 @@ class MaxDrawdown(CustomFactor, SingleInputMixin):
             out[i] = (peak - data[end, i]) / data[end, i]
 
 
-def DollarVolume():
+class AverageDollarVolume(CustomFactor):
     """
-    Returns a Factor computing the product of most recent close price and
-    volume.
+    Average Daily Dollar Volume
+
+    **Default Inputs:** [USEquityPricing.close, USEquityPricing.volume]
+
+    **Default Window Length:** None
     """
-    return USEquityPricing.close.latest * USEquityPricing.volume.latest
+    inputs = [USEquityPricing.close, USEquityPricing.volume]
+
+    def compute(self, today, assets, out, close, volume):
+        out[:] = nanmean(close * volume, axis=0)
 
 
 class _ExponentialWeightedFactor(SingleInputMixin, CustomFactor):
@@ -175,7 +181,7 @@ class _ExponentialWeightedFactor(SingleInputMixin, CustomFactor):
         Return weighting vector for an exponential moving statistic on `length`
         rows with a decay rate of `decay_rate`.
         """
-        return full(length, decay_rate) ** arange(length + 1, 1, -1)
+        return full(length, decay_rate, float) ** arange(length + 1, 1, -1)
 
     @classmethod
     @expect_types(span=Number)

@@ -1,6 +1,7 @@
 """
 Tests for Algorithms using the Pipeline API.
 """
+import os
 from unittest import TestCase
 from os.path import (
     dirname,
@@ -22,8 +23,6 @@ from pandas import (
     concat,
     DataFrame,
     date_range,
-    DatetimeIndex,
-    Panel,
     read_csv,
     Series,
     Timestamp,
@@ -37,6 +36,7 @@ from zipline.api import (
     pipeline_output,
     get_datetime,
 )
+from zipline.data.data_portal import DataPortal
 from zipline.errors import (
     AttachPipelineAfterInitialize,
     PipelineOutputDuringInitialize,
@@ -57,10 +57,12 @@ from zipline.pipeline.loaders.frame import DataFrameLoader
 from zipline.pipeline.loaders.equity_pricing_loader import (
     USEquityPricingLoader,
 )
-from zipline.utils.test_utils import (
+from zipline.testing import (
     make_simple_equity_info,
-    str_to_seconds,
+    str_to_seconds
 )
+from zipline.testing.core import DailyBarWriterFromDataFrames, \
+    create_empty_splits_mergers_frame, FakeDataPortal
 from zipline.utils.tradingcalendar import (
     trading_day,
     trading_days,
@@ -88,6 +90,14 @@ def rolling_vwap(df, length):
 
 
 class ClosesOnly(TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tempdir = TempDirectory()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tempdir.cleanup()
 
     def setUp(self):
         self.env = env = trading.TradingEnvironment()
@@ -130,6 +140,33 @@ class ClosesOnly(TestCase):
             {sid: arange(1, len(self.dates) + 1) * sid for sid in sids},
             index=self.dates,
             dtype=float,
+        )
+
+        # Create a data portal holding the data in self.closes
+        data = {}
+        for sid in sids:
+            data[sid] = DataFrame({
+                "open": self.closes[sid].values,
+                "high": self.closes[sid].values,
+                "low": self.closes[sid].values,
+                "close": self.closes[sid].values,
+                "volume": self.closes[sid].values,
+                "day": [day.value for day in self.dates]
+            })
+
+        path = os.path.join(self.tempdir.path, "testdaily.bcolz")
+
+        DailyBarWriterFromDataFrames(data).write(
+            path,
+            self.dates,
+            data
+        )
+
+        daily_bar_reader = BcolzDailyBarReader(path)
+
+        self.data_portal = DataPortal(
+            self.env,
+            equity_daily_reader=daily_bar_reader,
         )
 
         # Add a split for 'A' on its second date.
@@ -189,7 +226,7 @@ class ClosesOnly(TestCase):
         )
 
         with self.assertRaises(AttachPipelineAfterInitialize):
-            algo.run(source=self.closes)
+            algo.run(self.data_portal)
 
         def barf(context, data):
             raise AssertionError("Shouldn't make it past before_trading_start")
@@ -206,7 +243,7 @@ class ClosesOnly(TestCase):
         )
 
         with self.assertRaises(AttachPipelineAfterInitialize):
-            algo.run(source=self.closes)
+            algo.run(self.data_portal)
 
     def test_pipeline_output_after_initialize(self):
         """
@@ -235,7 +272,7 @@ class ClosesOnly(TestCase):
         )
 
         with self.assertRaises(PipelineOutputDuringInitialize):
-            algo.run(source=self.closes)
+            algo.run(self.data_portal)
 
     def test_get_output_nonexistent_pipeline(self):
         """
@@ -263,7 +300,7 @@ class ClosesOnly(TestCase):
         )
 
         with self.assertRaises(NoSuchPipeline):
-            algo.run(source=self.closes)
+            algo.run(self.data_portal)
 
     @parameterized.expand([('default', None),
                            ('day', 1),
@@ -313,8 +350,7 @@ class ClosesOnly(TestCase):
         )
 
         # Run for a week in the middle of our data.
-        algo.run(source=self.closes.loc[self.first_asset_start:
-                                        self.last_asset_end])
+        algo.run(self.data_portal)
 
 
 class MockDailyBarSpotReader(object):
@@ -344,10 +380,10 @@ class PipelineAlgorithmTestCase(TestCase):
         cls.tempdir = tempdir = TempDirectory()
         tempdir.create()
         try:
-            cls.raw_data, cls.bar_reader = cls.create_bar_reader(tempdir)
-            cls.adj_reader = cls.create_adjustment_reader(tempdir)
+            cls.raw_data, bar_reader = cls.create_bar_reader(tempdir)
+            adj_reader = cls.create_adjustment_reader(tempdir)
             cls.pipeline_loader = USEquityPricingLoader(
-                cls.bar_reader, cls.adj_reader
+                bar_reader, adj_reader
             )
         except:
             cls.tempdir.cleanup()
@@ -358,6 +394,7 @@ class PipelineAlgorithmTestCase(TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        del cls.pipeline_loader
         del cls.env
         cls.tempdir.cleanup()
 
@@ -394,16 +431,7 @@ class PipelineAlgorithmTestCase(TestCase):
                 'sid': cls.AAPL,
             }
         ])
-        mergers = DataFrame(
-            {
-                # Hackery to make the dtypes correct on an empty frame.
-                'effective_date': array([], dtype=int),
-                'ratio': array([], dtype=float),
-                'sid': array([], dtype=int),
-            },
-            index=DatetimeIndex([], tz='UTC'),
-            columns=['effective_date', 'ratio', 'sid'],
-        )
+        mergers = create_empty_splits_mergers_frame()
         dividends = DataFrame({
             'sid': array([], dtype=uint32),
             'amount': array([], dtype=float64),
@@ -414,9 +442,6 @@ class PipelineAlgorithmTestCase(TestCase):
         })
         writer.write(splits, mergers, dividends)
         return SQLiteAdjustmentReader(dbpath)
-
-    def make_source(self):
-        return Panel(self.raw_data).tz_localize('UTC', axis=1)
 
     def compute_expected_vwaps(self, window_lengths):
         AAPL, MSFT, BRK_A = self.AAPL, self.MSFT, self.BRK_A
@@ -531,7 +556,6 @@ class PipelineAlgorithmTestCase(TestCase):
                 BRK_A: True,
             }
             for asset in assets:
-
                 should_pass_filter = expect_over_300[asset]
                 if set_screen and not should_pass_filter:
                     self.assertNotIn(asset, results.index)
@@ -561,8 +585,48 @@ class PipelineAlgorithmTestCase(TestCase):
         )
 
         algo.run(
-            source=self.make_source(),
+            FakeDataPortal(),
             # Yes, I really do want to use the start and end dates I passed to
             # TradingAlgorithm.
             overwrite_sim_params=False,
         )
+
+    def test_empty_pipeline(self):
+
+        # For ensuring we call before_trading_start.
+        count = [0]
+
+        def initialize(context):
+            pipeline = attach_pipeline(Pipeline(), 'test')
+
+            vwap = VWAP(window_length=10)
+            pipeline.add(vwap, 'vwap')
+
+            # Nothing should have prices less than 0.
+            pipeline.set_screen(vwap < 0)
+
+        def handle_data(context, data):
+            pass
+
+        def before_trading_start(context, data):
+            context.results = pipeline_output('test')
+            self.assertTrue(context.results.empty)
+            count[0] += 1
+
+        algo = TradingAlgorithm(
+            initialize=initialize,
+            handle_data=handle_data,
+            before_trading_start=before_trading_start,
+            data_frequency='daily',
+            get_pipeline_loader=lambda column: self.pipeline_loader,
+            start=self.dates[0],
+            end=self.dates[-1],
+            env=self.env,
+        )
+
+        algo.run(
+            FakeDataPortal(),
+            overwrite_sim_params=False,
+        )
+
+        self.assertTrue(count[0] > 0)

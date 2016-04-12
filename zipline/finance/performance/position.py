@@ -1,5 +1,5 @@
 #
-# Copyright 2014 Quantopian, Inc.
+# Copyright 2016 Quantopian, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,19 +32,10 @@ Position Tracking
 """
 
 from __future__ import division
-from math import (
-    copysign,
-    floor,
-)
-
-from copy import copy
-
+from math import copysign
+from collections import OrderedDict
+import numpy as np
 import logbook
-import zipline.protocol as zp
-
-from zipline.utils.serialization_utils import (
-    VERSION_LABEL
-)
 
 log = logbook.Logger('Performance')
 
@@ -65,22 +56,21 @@ class Position(object):
         Register the number of shares we held at this dividend's ex date so
         that we can pay out the correct amount on the dividend's pay date.
         """
-        assert dividend['sid'] == self.sid
-        out = {'id': dividend['id']}
+        return {
+            'amount': self.amount * dividend.amount
+        }
 
-        # stock dividend
-        if dividend['payment_sid']:
-            out['payment_sid'] = dividend['payment_sid']
-            out['share_count'] = floor(self.amount * float(dividend['ratio']))
-
-        # cash dividend
-        if dividend['net_amount']:
-            out['cash_amount'] = self.amount * dividend['net_amount']
-        elif dividend['gross_amount']:
-            out['cash_amount'] = self.amount * dividend['gross_amount']
-
-        payment_owed = zp.dividend_payment(out)
-        return payment_owed
+    def earn_stock_dividend(self, stock_dividend):
+        """
+        Register the number of shares we held at this dividend's ex date so
+        that we can pay out the correct amount on the dividend's pay date.
+        """
+        return {
+            'payment_asset': stock_dividend.payment_asset,
+            'share_count': np.floor(
+                self.amount * float(stock_dividend.ratio)
+            )
+        }
 
     def handle_split(self, sid, ratio):
         """
@@ -92,10 +82,6 @@ class Position(object):
         if self.sid != sid:
             raise Exception("updating split with the wrong sid!")
 
-        log.info("handling split for sid = " + str(sid) +
-                 ", ratio = " + str(ratio))
-        log.info("before split: " + str(self))
-
         # adjust the # of shares by the ratio
         # (if we had 100 shares, and the ratio is 3,
         #  we now have 33 shares)
@@ -106,7 +92,7 @@ class Position(object):
         raw_share_count = self.amount / float(ratio)
 
         # e.g., 33
-        full_share_count = floor(raw_share_count)
+        full_share_count = np.floor(raw_share_count)
 
         # e.g., 0.333
         fractional_share_count = raw_share_count - full_share_count
@@ -114,11 +100,7 @@ class Position(object):
         # adjust the cost basis to the nearest cent, e.g., 60.0
         new_cost_basis = round(self.cost_basis * ratio, 2)
 
-        # adjust the last sale price
-        new_last_sale_price = round(self.last_sale_price * ratio, 2)
-
         self.cost_basis = new_cost_basis
-        self.last_sale_price = new_last_sale_price
         self.amount = full_share_count
 
         return_cash = round(float(fractional_share_count * new_cost_basis), 2)
@@ -210,28 +192,7 @@ last_sale_price: {last_sale_price}"
             'last_sale_price': self.last_sale_price
         }
 
-    def __getstate__(self):
-        state_dict = copy(self.__dict__)
 
-        STATE_VERSION = 1
-        state_dict[VERSION_LABEL] = STATE_VERSION
-
-        return state_dict
-
-    def __setstate__(self, state):
-
-        OLDEST_SUPPORTED_STATE = 1
-        version = state.pop(VERSION_LABEL)
-
-        if version < OLDEST_SUPPORTED_STATE:
-            raise BaseException("Position saved state is too old.")
-
-        self.__dict__.update(state)
-
-
-class positiondict(dict):
-
+class positiondict(OrderedDict):
     def __missing__(self, key):
-        pos = Position(key)
-        self[key] = pos
-        return pos
+        return None

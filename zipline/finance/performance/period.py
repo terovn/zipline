@@ -88,10 +88,6 @@ from six import itervalues, iteritems
 
 import zipline.protocol as zp
 
-from zipline.utils.serialization_utils import (
-    VERSION_LABEL
-)
-
 log = logbook.Logger('Performance')
 TRADE_TYPE = zp.DATASOURCE_TYPE.TRADE
 
@@ -126,19 +122,29 @@ def calc_period_stats(pos_stats, ending_cash):
         net_leverage=net_leverage)
 
 
+def calc_payout(multiplier, amount, old_price, price):
+    return (price - old_price) * multiplier * amount
+
+
 class PerformancePeriod(object):
 
     def __init__(
             self,
             starting_cash,
             asset_finder,
+            data_frequency,
+            data_portal,
             period_open=None,
             period_close=None,
             keep_transactions=True,
             keep_orders=False,
-            serialize_positions=True):
+            serialize_positions=True,
+            name=None):
 
         self.asset_finder = asset_finder
+        self.data_frequency = data_frequency
+
+        self._data_portal = data_portal
 
         self.period_open = period_open
         self.period_close = period_close
@@ -149,10 +155,21 @@ class PerformancePeriod(object):
         self.pnl = 0.0
 
         self.ending_cash = starting_cash
+
+        # Keyed by asset, the previous last sale price of positions with
+        # payouts on price differences, e.g. Futures.
+        #
+        # This dt is not the previous minute to the minute for which the
+        # calculation is done, but the last sale price either before the period
+        # start, or when the price at execution.
+        self._payout_last_sale_prices = {}
+
         # rollover initializes a number of self's attributes:
         self.rollover()
         self.keep_transactions = keep_transactions
         self.keep_orders = keep_orders
+
+        self.name = name
 
         # An object to recycle via assigning new values
         # when returning portfolio information.
@@ -189,6 +206,15 @@ class PerformancePeriod(object):
         self.orders_by_modified = {}
         self.orders_by_id = OrderedDict()
 
+        payout_assets = self._payout_last_sale_prices.keys()
+
+        for asset in payout_assets:
+            if asset in self._payout_last_sale_prices:
+                self._payout_last_sale_prices[asset] = \
+                    self.position_tracker.positions[asset].last_sale_price
+            else:
+                del self._payout_last_sale_prices[asset]
+
     def handle_dividends_paid(self, net_cash_payment):
         if net_cash_payment:
             self.handle_cash_payment(net_cash_payment)
@@ -207,14 +233,30 @@ class PerformancePeriod(object):
     def adjust_field(self, field, value):
         setattr(self, field, value)
 
+    def _get_payout_total(self, positions):
+        payouts = []
+        for asset, old_price in iteritems(self._payout_last_sale_prices):
+            pos = positions[asset]
+            amount = pos.amount
+            payout = calc_payout(
+                asset.multiplier,
+                amount,
+                old_price,
+                pos.last_sale_price)
+            payouts.append(payout)
+
+        return sum(payouts)
+
     def calculate_performance(self):
         pt = self.position_tracker
         pos_stats = pt.stats()
         self.ending_value = pos_stats.net_value
         self.ending_exposure = pos_stats.net_exposure
 
+        payout = self._get_payout_total(pt.positions)
+
         total_at_start = self.starting_cash + self.starting_value
-        self.ending_cash = self.starting_cash + self.period_cash_flow
+        self.ending_cash = self.starting_cash + self.period_cash_flow + payout
         total_at_end = self.ending_cash + self.ending_value
 
         self.pnl = total_at_end - total_at_start
@@ -241,6 +283,23 @@ class PerformancePeriod(object):
 
     def handle_execution(self, txn):
         self.period_cash_flow += self._calculate_execution_cash_flow(txn)
+
+        asset = self.asset_finder.retrieve_asset(txn.sid)
+        if isinstance(asset, Future):
+            try:
+                old_price = self._payout_last_sale_prices[asset]
+                pos = self.position_tracker.positions[asset]
+                amount = pos.amount
+                price = txn.price
+                cash_adj = calc_payout(
+                    asset.multiplier, amount, old_price, price)
+                self.adjust_cash(cash_adj)
+                if amount + txn.amount == 0:
+                    del self._payout_last_sale_prices[asset]
+                else:
+                    self._payout_last_sale_prices[asset] = price
+            except KeyError:
+                self._payout_last_sale_prices[asset] = txn.price
 
         if self.keep_transactions:
             try:
@@ -402,7 +461,7 @@ class PerformancePeriod(object):
                     self.ending_cash + self.ending_value)
         account.total_positions_value = \
             getattr(self, 'total_positions_value', self.ending_value)
-        account.total_positions_value = \
+        account.total_positions_exposure = \
             getattr(self, 'total_positions_exposure', self.ending_exposure)
         account.regt_equity = \
             getattr(self, 'regt_equity', self.ending_cash)
@@ -428,45 +487,3 @@ class PerformancePeriod(object):
         account.net_liquidation = getattr(self, 'net_liquidation',
                                           period_stats.net_liquidation)
         return account
-
-    def __getstate__(self):
-        state_dict = {k: v for k, v in iteritems(self.__dict__)
-                      if not k.startswith('_')}
-
-        state_dict['_portfolio_store'] = self._portfolio_store
-        state_dict['_account_store'] = self._account_store
-
-        state_dict['processed_transactions'] = \
-            dict(self.processed_transactions)
-        state_dict['orders_by_id'] = \
-            dict(self.orders_by_id)
-        state_dict['orders_by_modified'] = \
-            dict(self.orders_by_modified)
-
-        STATE_VERSION = 3
-        state_dict[VERSION_LABEL] = STATE_VERSION
-        return state_dict
-
-    def __setstate__(self, state):
-
-        OLDEST_SUPPORTED_STATE = 3
-        version = state.pop(VERSION_LABEL)
-
-        if version < OLDEST_SUPPORTED_STATE:
-            raise BaseException("PerformancePeriod saved state is too old.")
-
-        processed_transactions = {}
-        processed_transactions.update(state.pop('processed_transactions'))
-
-        orders_by_id = OrderedDict()
-        orders_by_id.update(state.pop('orders_by_id'))
-
-        orders_by_modified = {}
-        orders_by_modified.update(state.pop('orders_by_modified'))
-        self.processed_transactions = processed_transactions
-        self.orders_by_id = orders_by_id
-        self.orders_by_modified = orders_by_modified
-
-        self._execution_cash_flow_multipliers = {}
-
-        self.__dict__.update(state)

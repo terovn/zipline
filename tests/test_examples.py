@@ -16,14 +16,11 @@
 # This code is based on a unittest written by John Salvatier:
 # https://github.com/pymc-devs/pymc/blob/pymc3/tests/test_examples.py
 
-# Disable plotting
-#
-
 import glob
-import imp
 import matplotlib
 from nose_parameterized import parameterized
 import os
+import runpy
 from unittest import TestCase
 
 from zipline.utils import parse_args, run_pipeline
@@ -45,10 +42,10 @@ class ExamplesTests(TestCase):
     @parameterized.expand(((os.path.basename(f).replace('.', '_'), f) for f in
                            glob.glob(os.path.join(example_dir(), '*.py'))))
     def test_example(self, name, example):
-        imp.load_source('__main__', os.path.basename(example), open(example))
+        runpy.run_path(example, run_name='__main__')
 
     # Test algorithm as if scripts/run_algo.py is being used.
-    def test_example_run_pipline(self):
+    def test_example_run_pipeline(self):
         example = os.path.join(example_dir(), 'buyapple.py')
         confs = ['-f', example, '--start', '2011-1-1', '--end', '2012-1-1']
         parsed_args = parse_args(confs)

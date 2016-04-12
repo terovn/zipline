@@ -6,15 +6,19 @@ from types import FunctionType
 from unittest import TestCase
 
 from nose_parameterized import parameterized
-from numpy import arange, dtype
+from numpy import arange, array, dtype
+import pytz
 from six import PY3
 
 from zipline.utils.preprocess import call, preprocess
 from zipline.utils.input_validation import (
+    expect_dimensions,
+    ensure_timezone,
     expect_element,
     expect_dtypes,
     expect_types,
     optional,
+    optionally,
 )
 
 
@@ -277,7 +281,7 @@ class PreprocessTestCase(TestCase):
         self.assertIs(c_ret, good_c)
 
         with self.assertRaises(TypeError) as e:
-            foo(good_a, arange(3), good_c)
+            foo(good_a, arange(3, dtype='int64'), good_c)
 
         expected_message = (
             "{qualname}() expected a value with dtype 'datetime64[ns]'"
@@ -317,3 +321,85 @@ class PreprocessTestCase(TestCase):
             "or 'float64' for argument 'a', but got 'uint32' instead."
         ).format(qualname=qualname(foo))
         self.assertEqual(e.exception.args[0], expected_message)
+
+    def test_ensure_timezone(self):
+        @preprocess(tz=ensure_timezone)
+        def f(tz):
+            return tz
+
+        valid = {
+            'utc',
+            'EST',
+            'US/Eastern',
+        }
+        invalid = {
+            # unfortunatly, these are not actually timezones (yet)
+            'ayy',
+            'lmao',
+        }
+
+        # test coercing from string
+        for tz in valid:
+            self.assertEqual(f(tz), pytz.timezone(tz))
+
+        # test pass through of tzinfo objects
+        for tz in map(pytz.timezone, valid):
+            self.assertEqual(f(tz), tz)
+
+        # test invalid timezone strings
+        for tz in invalid:
+            self.assertRaises(pytz.UnknownTimeZoneError, f, tz)
+
+    def test_optionally(self):
+        error = TypeError('arg must be int')
+
+        def preprocessor(func, argname, arg):
+            if not isinstance(arg, int):
+                raise error
+            return arg
+
+        @preprocess(a=optionally(preprocessor))
+        def f(a):
+            return a
+
+        self.assertIs(f(1), 1)
+        self.assertIsNone(f(None))
+
+        with self.assertRaises(TypeError) as e:
+            f('a')
+        self.assertIs(e.exception, error)
+
+    def test_expect_dimensions(self):
+
+        @expect_dimensions(x=2)
+        def foo(x, y):
+            return x[0, 0]
+
+        self.assertEqual(foo(arange(1).reshape(1, 1), 10), 0)
+
+        with self.assertRaises(ValueError) as e:
+            foo(arange(1), 1)
+        errmsg = str(e.exception)
+        expected = (
+            "{qualname}() expected a 2-D array for argument 'x', but got"
+            " a 1-D array instead.".format(qualname=qualname(foo))
+        )
+        self.assertEqual(errmsg, expected)
+
+        with self.assertRaises(ValueError) as e:
+            foo(arange(1).reshape(1, 1, 1), 1)
+        errmsg = str(e.exception)
+        expected = (
+            "{qualname}() expected a 2-D array for argument 'x', but got"
+            " a 3-D array instead.".format(qualname=qualname(foo))
+        )
+        self.assertEqual(errmsg, expected)
+
+        with self.assertRaises(ValueError) as e:
+            foo(array(0), 1)
+        errmsg = str(e.exception)
+        expected = (
+            "{qualname}() expected a 2-D array for argument 'x', but got"
+            " a scalar instead.".format(qualname=qualname(foo))
+        )
+        self.assertEqual(errmsg, expected)

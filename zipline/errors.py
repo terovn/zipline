@@ -1,5 +1,5 @@
 #
-# Copyright 2013 Quantopian, Inc.
+# Copyright 2015 Quantopian, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,10 @@ class ZiplineError(Exception):
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
-        self.message = str(self)
+
+    @lazyval
+    def message(self):
+        return str(self)
 
     def __str__(self):
         msg = self.msg.format(**self.kwargs)
@@ -29,6 +32,33 @@ class ZiplineError(Exception):
 
     __unicode__ = __str__
     __repr__ = __str__
+
+
+class NoTradeDataAvailable(ZiplineError):
+    pass
+
+
+class NoTradeDataAvailableTooEarly(NoTradeDataAvailable):
+    msg = "{sid} does not exist on {dt}. It started trading on {start_dt}."
+
+
+class NoTradeDataAvailableTooLate(NoTradeDataAvailable):
+    msg = "{sid} does not exist on {dt}. It stopped trading on {end_dt}."
+
+
+class BenchmarkAssetNotAvailableTooEarly(NoTradeDataAvailableTooEarly):
+    pass
+
+
+class BenchmarkAssetNotAvailableTooLate(NoTradeDataAvailableTooLate):
+    pass
+
+
+class InvalidBenchmarkAsset(ZiplineError):
+    msg = """
+{sid} cannot be used as the benchmark because it has a stock \
+dividend on {dt}.  Choose another asset to use as the benchmark.
+""".strip()
 
 
 class WrongDataForTransform(ZiplineError):
@@ -60,6 +90,15 @@ You may only call 'set_slippage' in your initialize method.
 """.strip()
 
 
+class SetCancelPolicyPostInit(ZiplineError):
+    # Raised if a users script calls set_cancel_policy
+    # after the initialize method has returned.
+    msg = """
+You attempted to set the cancel policy outside of `initialize`. \
+You may only call 'set_cancel_policy' in your initialize method.
+""".strip()
+
+
 class RegisterTradingControlPostInit(ZiplineError):
     # Raised if a user's script register's a trading control after initialize
     # has been run.
@@ -87,6 +126,17 @@ class UnsupportedCommissionModel(ZiplineError):
     msg = """
 You attempted to set commission with an unsupported class. \
 Please use PerShare or PerTrade.
+""".strip()
+
+
+class UnsupportedCancelPolicy(ZiplineError):
+    """
+    Raised if a user script calls set_cancel_policy with an object that isn't
+    a CancelPolicy.
+    """
+    msg = """
+You attempted to set the cancel policy with an unsupported class.  Please use
+an instance of CancelPolicy.
 """.strip()
 
 
@@ -147,6 +197,13 @@ class UnsupportedOrderParameters(ZiplineError):
     msg = "{msg}"
 
 
+class CannotOrderDelistedAsset(ZiplineError):
+    """
+    Raised if an order is for a delisted asset.
+    """
+    msg = "{msg}"
+
+
 class BadOrderParameters(ZiplineError):
     """
     Raised if any impossible parameters (nan, negative limit/stop)
@@ -160,6 +217,13 @@ class OrderDuringInitialize(ZiplineError):
     Raised if order is called during initialize()
     """
     msg = "{msg}"
+
+
+class SetBenchmarkOutsideInitialize(ZiplineError):
+    """
+    Raised if set_benchmark is called outside initialize()
+    """
+    msg = "'set_benchmark' can only be called within initialize function."
 
 
 class AccountControlViolation(ZiplineError):
@@ -347,13 +411,17 @@ class WindowLengthNotPositive(ZiplineError):
     ).strip()
 
 
-class InputTermNotAtomic(ZiplineError):
+class WindowedInputToWindowedTerm(ZiplineError):
     """
-    Raised when a non-atomic term is specified as an input to a Pipeline API
-    term with a lookback window.
+    Raised when a windowed Pipeline API term is specified as an input to
+    another windowed term.
+
+    This is an error because it's generally not safe to compose windowed
+    functions on split/dividend adjusted data.
     """
     msg = (
-        "Can't compute {parent} with non-atomic input {child}."
+        "Can't compute windowed expression {parent} with "
+        "windowed input {child}."
     )
 
 
@@ -396,7 +464,7 @@ class DTypeNotSpecified(ZiplineError):
     )
 
 
-class InvalidDType(ZiplineError):
+class NotDType(ZiplineError):
     """
     Raised when a pipeline Term is constructed with a dtype that isn't a numpy
     dtype object.
@@ -404,6 +472,17 @@ class InvalidDType(ZiplineError):
     msg = (
         "{termname} expected a numpy dtype "
         "object for a dtype, but got {dtype} instead."
+    )
+
+
+class UnsupportedDType(ZiplineError):
+    """
+    Raised when a pipeline Term is constructed with a dtype that's not
+    supported.
+    """
+    msg = (
+        "Failed to construct {termname}.\n"
+        "Pipeline terms of dtype {dtype} are not yet supported."
     )
 
 
@@ -507,3 +586,17 @@ class AssetDBVersionError(ZiplineError):
         "Expected version: {expected_version}. Try rebuilding your asset "
         "database or updating your version of Zipline."
     )
+
+
+class AssetDBImpossibleDowngrade(ZiplineError):
+    msg = (
+        "The existing Asset database is version: {db_version} which is lower "
+        "than the desired downgrade version: {desired_version}."
+    )
+
+
+class HistoryWindowStartsBeforeData(ZiplineError):
+    msg = (
+        "History window extends before {first_trading_day}. To use this "
+        "history window, start the backtest on or after {suggested_start_day}."
+        )

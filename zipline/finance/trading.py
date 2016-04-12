@@ -1,5 +1,5 @@
 #
-# Copyright 2014 Quantopian, Inc.
+# Copyright 2015 Quantopian, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ from zipline.assets.asset_writer import (
 from zipline.errors import (
     NoFurtherDataError
 )
-
+from zipline.utils.memoize import remember_last, lazyval
 
 log = logbook.Logger('Trading')
 
@@ -68,6 +68,7 @@ class TradingEnvironment(object):
         load=None,
         bm_symbol='^GSPC',
         exchange_tz="US/Eastern",
+        min_date=None,
         max_date=None,
         env_trading_calendar=tradingcalendar,
         asset_db_path=':memory:'
@@ -82,10 +83,7 @@ class TradingEnvironment(object):
         # `tc_td` is short for "trading calendar trading days"
         tc_td = env_trading_calendar.trading_days
 
-        if max_date:
-            self.trading_days = tc_td[tc_td <= max_date].copy()
-        else:
-            self.trading_days = tc_td.copy()
+        self.trading_days = tc_td[tc_td.slice_indexer(min_date, max_date)]
 
         self.first_trading_day = self.trading_days[0]
         self.last_trading_day = self.trading_days[-1]
@@ -124,6 +122,11 @@ class TradingEnvironment(object):
             self.asset_finder = AssetFinder(engine)
         else:
             self.asset_finder = None
+
+    @lazyval
+    def market_minutes(self):
+        return self.minutes_for_days_in_range(self.first_trading_day,
+                                              self.last_trading_day)
 
     def write_data(self,
                    engine=None,
@@ -174,23 +177,43 @@ class TradingEnvironment(object):
 
         # If any pandas.DataFrame data has been provided,
         # write it to the database.
-        if (equities_df is not None or futures_df is not None or
-                exchanges_df is not None or root_symbols_df is not None):
-            self._write_data_dataframes(equities_df, futures_df,
-                                        exchanges_df, root_symbols_df)
+        has_rows = lambda df: df is not None and len(df) > 0
+        if any(map(has_rows, [equities_df,
+                              futures_df,
+                              exchanges_df,
+                              root_symbols_df])):
+            self._write_data_dataframes(
+                equities=equities_df,
+                futures=futures_df,
+                exchanges=exchanges_df,
+                root_symbols=root_symbols_df,
+            )
 
-        if (equities_data is not None or futures_data is not None or
-                exchanges_data is not None or root_symbols_data is not None):
-            self._write_data_dicts(equities_data, futures_data,
-                                   exchanges_data, root_symbols_data)
+        # Same for dicts.
+        has_data = lambda d: d is not None and len(d) > 0
+        if any(map(has_data, [equities_data,
+                              futures_data,
+                              exchanges_data,
+                              futures_data])):
+            self._write_data_dicts(
+                equities=equities_data,
+                futures=futures_data,
+                exchanges=exchanges_data,
+                root_symbols=root_symbols_data
+            )
 
-        # These could be lists or other iterables such as a pandas.Index.
-        # For simplicity, don't check whether data has been provided.
-        self._write_data_lists(equities_identifiers,
-                               futures_identifiers,
-                               exchanges_identifiers,
-                               root_symbols_identifiers,
-                               allow_sid_assignment=allow_sid_assignment)
+        # Same for iterables.
+        if any(map(has_data, [equities_identifiers,
+                              futures_identifiers,
+                              exchanges_identifiers,
+                              root_symbols_identifiers])):
+            self._write_data_lists(
+                equities=equities_identifiers,
+                futures=futures_identifiers,
+                exchanges=exchanges_identifiers,
+                root_symbols=root_symbols_identifiers,
+                allow_sid_assignment=allow_sid_assignment
+            )
 
     def _write_data_lists(self, equities=None, futures=None, exchanges=None,
                           root_symbols=None, allow_sid_assignment=True):
@@ -280,8 +303,11 @@ class TradingEnvironment(object):
         return self.trading_days[idx]
 
     def days_in_range(self, start, end):
-        mask = ((self.trading_days >= start) &
-                (self.trading_days <= end))
+        start_date = self.normalize_date(start)
+        end_date = self.normalize_date(end)
+
+        mask = ((self.trading_days >= start_date) &
+                (self.trading_days <= end_date))
         return self.trading_days[mask]
 
     def opens_in_range(self, start, end):
@@ -297,9 +323,20 @@ class TradingEnvironment(object):
         start_date = self.normalize_date(start)
         end_date = self.normalize_date(end)
 
+        o_and_c = self.open_and_closes[
+            self.open_and_closes.index.slice_indexer(start_date, end_date)]
+
+        opens = o_and_c.market_open
+        closes = o_and_c.market_close
+
+        one_min = pd.Timedelta(1, unit='m')
+
         all_minutes = []
-        for day in self.days_in_range(start_date, end_date):
-            day_minutes = self.market_minutes_for_day(day)
+        for i in range(0, len(o_and_c.index)):
+            market_open = opens[i]
+            market_close = closes[i]
+            day_minutes = np.arange(market_open, market_close + one_min,
+                                    dtype='datetime64[m]')
             all_minutes.append(day_minutes)
 
         # Concatenate all minutes and truncate minutes before start/after end.
@@ -354,6 +391,7 @@ class TradingEnvironment(object):
         # then return the open of the *next* trading day.
         return self.next_open_and_close(start)[0]
 
+    @remember_last
     def previous_market_minute(self, start):
         """
         Get the next market minute before @start. This is either the immediate
@@ -374,7 +412,7 @@ class TradingEnvironment(object):
 
     def get_open_and_close(self, day):
         index = self.open_and_closes.index.get_loc(day.date())
-        todays_minutes = self.open_and_closes.values[index]
+        todays_minutes = self.open_and_closes.iloc[index]
         return todays_minutes[0], todays_minutes[1]
 
     def market_minutes_for_day(self, stamp):

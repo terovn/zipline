@@ -10,13 +10,14 @@ from nose_parameterized import parameterized
 from numpy import (
     arange,
     array,
+    concatenate,
+    float32,
     full,
+    log,
     nan,
     tile,
+    where,
     zeros,
-    float32,
-    concatenate,
-    log,
 )
 from numpy.testing import assert_almost_equal
 from pandas import (
@@ -41,7 +42,7 @@ from zipline.data.us_equity_pricing import BcolzDailyBarReader
 from zipline.finance.trading import TradingEnvironment
 from zipline.lib.adjustment import MULTIPLY
 from zipline.pipeline.loaders.synthetic import (
-    ConstantLoader,
+    PrecomputedLoader,
     NullAdjustmentReader,
     SyntheticDailyBarWriter,
 )
@@ -54,7 +55,7 @@ from zipline.pipeline.loaders.equity_pricing_loader import (
 from zipline.pipeline.engine import SimplePipelineEngine
 from zipline.pipeline import CustomFactor
 from zipline.pipeline.factors import (
-    DollarVolume,
+    AverageDollarVolume,
     EWMA,
     EWMSTD,
     ExponentialWeightedMovingAverage,
@@ -62,13 +63,13 @@ from zipline.pipeline.factors import (
     MaxDrawdown,
     SimpleMovingAverage,
 )
-from zipline.utils.memoize import lazyval
-from zipline.utils.test_utils import (
+from zipline.testing import (
     make_rotating_equity_info,
     make_simple_equity_info,
     product_upper_triangle,
     check_arrays,
 )
+from zipline.utils.memoize import lazyval
 
 
 class RollingSumDifference(CustomFactor):
@@ -93,6 +94,22 @@ class AssetID(CustomFactor):
 
     def compute(self, today, assets, out, close):
         out[:] = assets
+
+
+class AssetIDPlusDay(CustomFactor):
+    window_length = 1
+    inputs = [USEquityPricing.close]
+
+    def compute(self, today, assets, out, close):
+        out[:] = assets + today.day
+
+
+class OpenPrice(CustomFactor):
+    window_length = 1
+    inputs = [USEquityPricing.open]
+
+    def compute(self, today, assets, out, open):
+        out[:] = open
 
 
 def assert_multi_index_is_product(testcase, index, *levels):
@@ -126,16 +143,16 @@ class ColumnArgs(tuple):
         return hash(frozenset(self))
 
 
-class RecordingConstantLoader(ConstantLoader):
+class RecordingPrecomputedLoader(PrecomputedLoader):
     def __init__(self, *args, **kwargs):
-        super(RecordingConstantLoader, self).__init__(*args, **kwargs)
+        super(RecordingPrecomputedLoader, self).__init__(*args, **kwargs)
 
         self.load_calls = []
 
     def load_adjusted_array(self, columns, dates, assets, mask):
         self.load_calls.append(ColumnArgs(*columns))
 
-        return super(RecordingConstantLoader, self).load_adjusted_array(
+        return super(RecordingPrecomputedLoader, self).load_adjusted_array(
             columns, dates, assets, mask,
         )
 
@@ -157,22 +174,23 @@ class ConstantInputTestCase(TestCase):
             USEquityPricing.close: 3,
             USEquityPricing.high: 4,
         }
-        self.assets = [1, 2, 3]
+        self.asset_ids = [1, 2, 3, 4]
         self.dates = date_range('2014-01', '2014-03', freq='D', tz='UTC')
-        self.loader = ConstantLoader(
+        self.loader = PrecomputedLoader(
             constants=self.constants,
             dates=self.dates,
-            assets=self.assets,
+            sids=self.asset_ids,
         )
 
         self.asset_info = make_simple_equity_info(
-            self.assets,
+            self.asset_ids,
             start_date=self.dates[0],
             end_date=self.dates[-1],
         )
         environment = TradingEnvironment()
         environment.write_data(equities_df=self.asset_info)
         self.asset_finder = environment.asset_finder
+        self.assets = self.asset_finder.retrieve_all(self.asset_ids)
 
     def test_bad_dates(self):
         loader = self.loader
@@ -192,7 +210,7 @@ class ConstantInputTestCase(TestCase):
             lambda column: loader, self.dates, self.asset_finder,
         )
         factor = AssetID()
-        asset = self.assets[0]
+        asset = self.asset_ids[0]
         p = Pipeline(columns={'f': factor}, screen=factor <= asset)
 
         # The crux of this is that when we run the pipeline for a single day
@@ -204,7 +222,7 @@ class ConstantInputTestCase(TestCase):
     def test_screen(self):
         loader = self.loader
         finder = self.asset_finder
-        assets = array(self.assets)
+        asset_ids = array(self.asset_ids)
         engine = SimplePipelineEngine(
             lambda column: loader, self.dates, self.asset_finder,
         )
@@ -212,11 +230,11 @@ class ConstantInputTestCase(TestCase):
         dates = self.dates[10:10 + num_dates]
 
         factor = AssetID()
-        for asset in assets:
-            p = Pipeline(columns={'f': factor}, screen=factor <= asset)
+        for asset_id in asset_ids:
+            p = Pipeline(columns={'f': factor}, screen=factor <= asset_id)
             result = engine.run_pipeline(p, dates[0], dates[-1])
 
-            expected_sids = assets[assets <= asset]
+            expected_sids = asset_ids[asset_ids <= asset_id]
             expected_assets = finder.retrieve_all(expected_sids)
             expected_result = DataFrame(
                 index=MultiIndex.from_product([dates, expected_assets]),
@@ -228,7 +246,6 @@ class ConstantInputTestCase(TestCase):
 
     def test_single_factor(self):
         loader = self.loader
-        finder = self.asset_finder
         assets = self.assets
         engine = SimplePipelineEngine(
             lambda column: loader, self.dates, self.asset_finder,
@@ -252,18 +269,17 @@ class ConstantInputTestCase(TestCase):
             result = engine.run_pipeline(p, dates[0], dates[-1])
             self.assertEqual(set(result.columns), {'f'})
             assert_multi_index_is_product(
-                self, result.index, dates, finder.retrieve_all(assets)
+                self, result.index, dates, assets
             )
 
             check_arrays(
                 result['f'].unstack().values,
-                full(result_shape, expected_result),
+                full(result_shape, expected_result, dtype=float),
             )
 
     def test_multiple_rolling_factors(self):
 
         loader = self.loader
-        finder = self.asset_finder
         assets = self.assets
         engine = SimplePipelineEngine(
             lambda column: loader, self.dates, self.asset_finder,
@@ -289,22 +305,22 @@ class ConstantInputTestCase(TestCase):
 
         self.assertEqual(set(results.columns), {'short', 'high', 'long'})
         assert_multi_index_is_product(
-            self, results.index, dates, finder.retrieve_all(assets)
+            self, results.index, dates, assets
         )
 
         # row-wise sum over an array whose values are all (1 - 2)
         check_arrays(
             results['short'].unstack().values,
-            full(shape, -short_factor.window_length),
+            full(shape, -short_factor.window_length, dtype=float),
         )
         check_arrays(
             results['long'].unstack().values,
-            full(shape, -long_factor.window_length),
+            full(shape, -long_factor.window_length, dtype=float),
         )
         # row-wise sum over an array whose values are all (1 - 3)
         check_arrays(
             results['high'].unstack().values,
-            full(shape, -2 * high_factor.window_length),
+            full(shape, -2 * high_factor.window_length, dtype=float),
         )
 
     def test_numeric_factor(self):
@@ -355,6 +371,87 @@ class ConstantInputTestCase(TestCase):
             DataFrame(expected_avg, index=dates, columns=self.assets),
         )
 
+    def test_masked_factor(self):
+        """
+        Test that a Custom Factor computes the correct values when passed a
+        mask. The mask/filter should be applied prior to computing any values,
+        as opposed to computing the factor across the entire universe of
+        assets. Any assets that are filtered out should be filled with missing
+        values.
+        """
+        loader = self.loader
+        dates = self.dates[5:8]
+        assets = self.assets
+        asset_ids = self.asset_ids
+        constants = self.constants
+        open = USEquityPricing.open
+        close = USEquityPricing.close
+        engine = SimplePipelineEngine(
+            lambda column: loader, self.dates, self.asset_finder,
+        )
+
+        factor1_value = constants[open]
+        factor2_value = 3.0 * (constants[open] - constants[close])
+
+        def create_expected_results(expected_value, mask):
+            expected_values = where(mask, expected_value, nan)
+            return DataFrame(expected_values, index=dates, columns=assets)
+
+        cascading_mask = AssetIDPlusDay() < (asset_ids[-1] + dates[0].day)
+        expected_cascading_mask_result = array(
+            [[True,  True,  True, False],
+             [True,  True, False, False],
+             [True, False, False, False]],
+            dtype=bool,
+        )
+
+        alternating_mask = (AssetIDPlusDay() % 2).eq(0)
+        expected_alternating_mask_result = array(
+            [[False,  True, False,   True],
+             [True,  False,  True,  False],
+             [False,  True, False,   True]],
+            dtype=bool,
+        )
+
+        masks = cascading_mask, alternating_mask
+        expected_mask_results = (
+            expected_cascading_mask_result,
+            expected_alternating_mask_result,
+        )
+        for mask, expected_mask in zip(masks, expected_mask_results):
+            # Test running a pipeline with a single masked factor.
+            columns = {'factor1': OpenPrice(mask=mask), 'mask': mask}
+            pipeline = Pipeline(columns=columns)
+            results = engine.run_pipeline(pipeline, dates[0], dates[-1])
+
+            mask_results = results['mask'].unstack()
+            check_arrays(mask_results.values, expected_mask)
+
+            factor1_results = results['factor1'].unstack()
+            factor1_expected = create_expected_results(factor1_value,
+                                                       mask_results)
+            assert_frame_equal(factor1_results, factor1_expected)
+
+            # Test running a pipeline with a second factor. This ensures that
+            # adding another factor to the pipeline with a different window
+            # length does not cause any unexpected behavior, especially when
+            # both factors share the same mask.
+            columns['factor2'] = RollingSumDifference(mask=mask)
+            pipeline = Pipeline(columns=columns)
+            results = engine.run_pipeline(pipeline, dates[0], dates[-1])
+
+            mask_results = results['mask'].unstack()
+            check_arrays(mask_results.values, expected_mask)
+
+            factor1_results = results['factor1'].unstack()
+            factor2_results = results['factor2'].unstack()
+            factor1_expected = create_expected_results(factor1_value,
+                                                       mask_results)
+            factor2_expected = create_expected_results(factor2_value,
+                                                       mask_results)
+            assert_frame_equal(factor1_results, factor1_expected)
+            assert_frame_equal(factor2_results, factor2_expected)
+
     def test_rolling_and_nonrolling(self):
         open_ = USEquityPricing.open
         close = USEquityPricing.close
@@ -365,10 +462,10 @@ class ConstantInputTestCase(TestCase):
         dates_to_test = self.dates[-30:]
 
         constants = {open_: 1, close: 2, volume: 3}
-        loader = ConstantLoader(
+        loader = PrecomputedLoader(
             constants=constants,
             dates=self.dates,
-            assets=self.assets,
+            sids=self.asset_ids,
         )
         engine = SimplePipelineEngine(
             lambda column: loader, self.dates, self.asset_finder,
@@ -394,23 +491,29 @@ class ConstantInputTestCase(TestCase):
             set(result.columns)
         )
 
-        result_index = self.assets * len(dates_to_test)
+        result_index = self.asset_ids * len(dates_to_test)
         result_shape = (len(result_index),)
         check_arrays(
             result['sumdiff'],
-            Series(index=result_index, data=full(result_shape, -3)),
+            Series(
+                index=result_index,
+                data=full(result_shape, -3, dtype=float),
+            ),
         )
 
         for name, const in [('open', 1), ('close', 2), ('volume', 3)]:
             check_arrays(
                 result[name],
-                Series(index=result_index, data=full(result_shape, const)),
+                Series(
+                    index=result_index,
+                    data=full(result_shape, const, dtype=float),
+                ),
             )
 
     def test_loader_given_multiple_columns(self):
 
         class Loader1DataSet1(DataSet):
-            col1 = Column(float32)
+            col1 = Column(float)
             col2 = Column(float32)
 
         class Loader1DataSet2(DataSet):
@@ -425,14 +528,15 @@ class ConstantInputTestCase(TestCase):
                       Loader1DataSet1.col2: 2,
                       Loader1DataSet2.col1: 3,
                       Loader1DataSet2.col2: 4}
-        loader1 = RecordingConstantLoader(constants=constants1,
-                                          dates=self.dates,
-                                          assets=self.assets)
+
+        loader1 = RecordingPrecomputedLoader(constants=constants1,
+                                             dates=self.dates,
+                                             sids=self.assets)
         constants2 = {Loader2DataSet.col1: 5,
                       Loader2DataSet.col2: 6}
-        loader2 = RecordingConstantLoader(constants=constants2,
-                                          dates=self.dates,
-                                          assets=self.assets)
+        loader2 = RecordingPrecomputedLoader(constants=constants2,
+                                             dates=self.dates,
+                                             sids=self.assets)
 
         engine = SimplePipelineEngine(
             lambda column:
@@ -471,19 +575,26 @@ class ConstantInputTestCase(TestCase):
                 for name, pipe_col in iteritems(columns)}
 
         index = MultiIndex.from_product([self.dates[2:], self.assets])
+
+        def expected_for_col(col):
+            val = vals[col]
+            offset = columns[col].window_length - min_window
+            return concatenate(
+                [
+                    full(offset * index.levshape[1], nan),
+                    full(
+                        (index.levshape[0] - offset) * index.levshape[1],
+                        val,
+                        float,
+                    )
+                ],
+            )
+
         expected = DataFrame(
-            data={col:
-                  concatenate((
-                      full((columns[col].window_length - min_window)
-                           * index.levshape[1],
-                           nan),
-                      full((index.levshape[0]
-                            - (columns[col].window_length - min_window))
-                           * index.levshape[1],
-                           val)))
-                  for col, val in iteritems(vals)},
+            data={col: expected_for_col(col) for col in vals},
             index=index,
-            columns=columns)
+            columns=columns,
+        )
 
         assert_frame_equal(result, expected)
 
@@ -504,7 +615,7 @@ class FrameInputTestCase(TestCase):
         cls.env = TradingEnvironment()
         day = cls.env.trading_day
 
-        cls.assets = Int64Index([1, 2, 3])
+        cls.asset_ids = [1, 2, 3]
         cls.dates = date_range(
             '2015-01-01',
             '2015-01-31',
@@ -513,12 +624,13 @@ class FrameInputTestCase(TestCase):
         )
 
         asset_info = make_simple_equity_info(
-            cls.assets,
+            cls.asset_ids,
             start_date=cls.dates[0],
             end_date=cls.dates[-1],
         )
         cls.env.write_data(equities_df=asset_info)
         cls.asset_finder = cls.env.asset_finder
+        cls.assets = cls.asset_finder.retrieve_all(cls.asset_ids)
 
     @classmethod
     def tearDownClass(cls):
@@ -533,7 +645,7 @@ class FrameInputTestCase(TestCase):
         return DataFrame(data, columns=self.assets, index=self.dates)
 
     def test_compute_with_adjustments(self):
-        dates, assets = self.dates, self.assets
+        dates, asset_ids = self.dates, self.asset_ids
         low, high = USEquityPricing.low, USEquityPricing.high
         apply_idxs = [3, 10, 16]
 
@@ -544,7 +656,7 @@ class FrameInputTestCase(TestCase):
             [
                 dict(
                     kind=MULTIPLY,
-                    sid=assets[1],
+                    sid=asset_ids[1],
                     value=2.0,
                     start_date=None,
                     end_date=apply_date(0, offset=-1),
@@ -552,7 +664,7 @@ class FrameInputTestCase(TestCase):
                 ),
                 dict(
                     kind=MULTIPLY,
-                    sid=assets[1],
+                    sid=asset_ids[1],
                     value=3.0,
                     start_date=None,
                     end_date=apply_date(1, offset=-1),
@@ -560,7 +672,7 @@ class FrameInputTestCase(TestCase):
                 ),
                 dict(
                     kind=MULTIPLY,
-                    sid=assets[1],
+                    sid=asset_ids[1],
                     value=5.0,
                     start_date=None,
                     end_date=apply_date(2, offset=-1),
@@ -630,7 +742,7 @@ class SyntheticBcolzTestCase(TestCase):
             asset_lifetime=8,
         )
         cls.last_asset_end = cls.asset_info['end_date'].max()
-        cls.all_assets = cls.asset_info.index
+        cls.all_asset_ids = cls.asset_info.index
 
         cls.env.write_data(equities_df=cls.asset_info)
         cls.finder = cls.env.asset_finder
@@ -646,7 +758,7 @@ class SyntheticBcolzTestCase(TestCase):
             table = cls.writer.write(
                 cls.temp_dir.getpath('testdata.bcolz'),
                 cls.calendar,
-                cls.all_assets,
+                cls.all_asset_ids,
             )
 
             cls.pipeline_loader = USEquityPricingLoader(
@@ -698,7 +810,7 @@ class SyntheticBcolzTestCase(TestCase):
             self.finder,
         )
         window_length = 5
-        assets = self.all_assets
+        asset_ids = self.all_asset_ids
         dates = date_range(
             self.first_asset_start + self.trading_day,
             self.last_asset_end,
@@ -722,7 +834,7 @@ class SyntheticBcolzTestCase(TestCase):
         # **previous** day's data.
         expected_raw = rolling_mean(
             self.writer.expected_values_2d(
-                dates - self.trading_day, assets, 'close',
+                dates - self.trading_day, asset_ids, 'close',
             ),
             window_length,
             min_periods=1,
@@ -732,7 +844,7 @@ class SyntheticBcolzTestCase(TestCase):
             # Truncate off the extra rows needed to compute the SMAs.
             expected_raw[window_length:],
             index=dates_to_test,  # dates_to_test is dates[window_length:]
-            columns=self.finder.retrieve_all(assets),
+            columns=self.finder.retrieve_all(asset_ids),
         )
         self.write_nans(expected)
         result = results['sma'].unstack()
@@ -750,7 +862,7 @@ class SyntheticBcolzTestCase(TestCase):
             self.finder,
         )
         window_length = 5
-        assets = self.all_assets
+        asset_ids = self.all_asset_ids
         dates = date_range(
             self.first_asset_start + self.trading_day,
             self.last_asset_end,
@@ -772,9 +884,9 @@ class SyntheticBcolzTestCase(TestCase):
         # We expect NaNs when the asset was undefined, otherwise 0 everywhere,
         # since the input is always increasing.
         expected = DataFrame(
-            data=zeros((len(dates_to_test), len(assets)), dtype=float),
+            data=zeros((len(dates_to_test), len(asset_ids)), dtype=float),
             index=dates_to_test,
-            columns=self.finder.retrieve_all(assets),
+            columns=self.finder.retrieve_all(asset_ids),
         )
         self.write_nans(expected)
         result = results['drawdown'].unstack()
@@ -951,9 +1063,18 @@ class ParameterizedFactorTestCase(TestCase):
 
     def test_dollar_volume(self):
         results = self.engine.run_pipeline(
-            Pipeline(columns={'dv': DollarVolume()}),
-            self.dates[0],
+            Pipeline(
+                columns={
+                    'dv1': AverageDollarVolume(window_length=1),
+                    'dv5': AverageDollarVolume(window_length=5),
+                }
+            ),
+            self.dates[5],
             self.dates[-1],
-        )['dv'].unstack()
-        expected = (self.raw_data ** 2) * 2
-        assert_frame_equal(results, expected)
+        )
+
+        expected_1 = (self.raw_data[5:] ** 2) * 2
+        assert_frame_equal(results['dv1'].unstack(), expected_1)
+
+        expected_5 = rolling_mean((self.raw_data ** 2) * 2, window=5)[5:]
+        assert_frame_equal(results['dv5'].unstack(), expected_5)

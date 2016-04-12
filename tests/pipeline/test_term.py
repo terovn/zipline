@@ -7,18 +7,24 @@ from unittest import TestCase
 
 from zipline.errors import (
     DTypeNotSpecified,
-    InputTermNotAtomic,
-    InvalidDType,
+    WindowedInputToWindowedTerm,
+    NotDType,
     TermInputsNotSpecified,
+    UnsupportedDType,
     WindowLengthNotSpecified,
 )
-from zipline.pipeline import Factor, TermGraph
+from zipline.pipeline import Classifier, Factor, Filter, TermGraph
 from zipline.pipeline.data import Column, DataSet
+from zipline.pipeline.data.testing import TestingDataSet
 from zipline.pipeline.term import AssetExists, NotSpecified
 from zipline.pipeline.expression import NUMEXPR_MATH_FUNCS
 from zipline.utils.numpy_utils import (
+    bool_dtype,
+    complex128_dtype,
     datetime64ns_dtype,
     float64_dtype,
+    int64_dtype,
+    NoDefaultMissingValue,
 )
 
 
@@ -28,10 +34,19 @@ class SomeDataSet(DataSet):
     buzz = Column(float64_dtype)
 
 
+class SubDataSet(SomeDataSet):
+    pass
+
+
+class SubDataSetNewCol(SomeDataSet):
+    qux = Column(float64_dtype)
+
+
 class SomeFactor(Factor):
     dtype = float64_dtype
     window_length = 5
     inputs = [SomeDataSet.foo, SomeDataSet.bar]
+
 SomeFactorAlias = SomeFactor
 
 
@@ -142,7 +157,7 @@ class DependencyResolutionTestCase(TestCase):
         self.assertEqual(graph.extra_rows[bar], 4)
         self.assertEqual(graph.extra_rows[buzz], 4)
 
-    def test_reuse_atomic_terms(self):
+    def test_reuse_loadable_terms(self):
         """
         Test that raw inputs only show up in the dependency graph once.
         """
@@ -159,7 +174,7 @@ class DependencyResolutionTestCase(TestCase):
 
     def test_disallow_recursive_lookback(self):
 
-        with self.assertRaises(InputTermNotAtomic):
+        with self.assertRaises(WindowedInputToWindowedTerm):
             SomeFactor(inputs=[SomeFactor(), SomeDataSet.foo])
 
 
@@ -319,5 +334,135 @@ class ObjectIdentityTestCase(TestCase):
         with self.assertRaises(DTypeNotSpecified):
             SomeFactorNoDType()
 
-        with self.assertRaises(InvalidDType):
+        with self.assertRaises(NotDType):
             SomeFactor(dtype=1)
+
+        with self.assertRaises(NoDefaultMissingValue):
+            SomeFactor(dtype=int64_dtype)
+
+        with self.assertRaises(UnsupportedDType):
+            SomeFactor(dtype=complex128_dtype)
+
+    def test_require_super_call_in_validate(self):
+
+        class MyFactor(Factor):
+            inputs = ()
+            dtype = float64_dtype
+            window_length = 0
+
+            def _validate(self):
+                "Woops, I didn't call super()!"
+
+        with self.assertRaises(AssertionError) as e:
+            MyFactor()
+
+        errmsg = str(e.exception)
+        self.assertEqual(
+            errmsg,
+            "Term._validate() was not called.\n"
+            "This probably means that you overrode _validate"
+            " without calling super()."
+        )
+
+    def test_latest_on_different_dtypes(self):
+        factor_dtypes = (float64_dtype, datetime64ns_dtype)
+        for column in TestingDataSet.columns:
+            if column.dtype == bool_dtype:
+                self.assertIsInstance(column.latest, Filter)
+            elif column.dtype == int64_dtype:
+                self.assertIsInstance(column.latest, Classifier)
+            elif column.dtype in factor_dtypes:
+                self.assertIsInstance(column.latest, Factor)
+            else:
+                self.fail(
+                    "Unknown dtype %s for column %s" % (column.dtype, column)
+                )
+            # These should be the same value, plus this has the convenient
+            # property of correctly handling `NaN`.
+            self.assertIs(column.missing_value, column.latest.missing_value)
+
+    def test_failure_timing_on_bad_dtypes(self):
+
+        # Just constructing a bad column shouldn't fail.
+        Column(dtype=int64_dtype)
+        with self.assertRaises(NoDefaultMissingValue) as e:
+            class BadDataSet(DataSet):
+                bad_column = Column(dtype=int64_dtype)
+                float_column = Column(dtype=float64_dtype)
+                int_column = Column(dtype=int64_dtype, missing_value=3)
+
+        self.assertTrue(
+            str(e.exception.args[0]).startswith(
+                "Failed to create Column with name 'bad_column'"
+            )
+        )
+
+        Column(dtype=complex128_dtype)
+        with self.assertRaises(UnsupportedDType):
+            class BadDataSetComplex(DataSet):
+                bad_column = Column(dtype=complex128_dtype)
+                float_column = Column(dtype=float64_dtype)
+                int_column = Column(dtype=int64_dtype, missing_value=3)
+
+
+class SubDataSetTestCase(TestCase):
+    def test_subdataset(self):
+        some_dataset_map = {
+            column.name: column for column in SomeDataSet.columns
+        }
+        sub_dataset_map = {
+            column.name: column for column in SubDataSet.columns
+        }
+        self.assertEqual(
+            {column.name for column in SomeDataSet.columns},
+            {column.name for column in SubDataSet.columns},
+        )
+        for k, some_dataset_column in some_dataset_map.items():
+            sub_dataset_column = sub_dataset_map[k]
+            self.assertIsNot(
+                some_dataset_column,
+                sub_dataset_column,
+                'subclass column %r should not have the same identity as'
+                ' the parent' % k,
+            )
+            self.assertEqual(
+                some_dataset_column.dtype,
+                sub_dataset_column.dtype,
+                'subclass column %r should have the same dtype as the parent' %
+                k,
+            )
+
+    def test_add_column(self):
+        some_dataset_map = {
+            column.name: column for column in SomeDataSet.columns
+        }
+        sub_dataset_new_col_map = {
+            column.name: column for column in SubDataSetNewCol.columns
+        }
+        sub_col_names = {column.name for column in SubDataSetNewCol.columns}
+
+        # check our extra col
+        self.assertIn('qux', sub_col_names)
+        self.assertEqual(
+            sub_dataset_new_col_map['qux'].dtype,
+            float64_dtype,
+        )
+
+        self.assertEqual(
+            {column.name for column in SomeDataSet.columns},
+            sub_col_names - {'qux'},
+        )
+        for k, some_dataset_column in some_dataset_map.items():
+            sub_dataset_column = sub_dataset_new_col_map[k]
+            self.assertIsNot(
+                some_dataset_column,
+                sub_dataset_column,
+                'subclass column %r should not have the same identity as'
+                ' the parent' % k,
+            )
+            self.assertEqual(
+                some_dataset_column.dtype,
+                sub_dataset_column.dtype,
+                'subclass column %r should have the same dtype as the parent' %
+                k,
+            )

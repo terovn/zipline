@@ -2,7 +2,9 @@
 Mixins classes for use with Filters and Factors.
 """
 from numpy import full_like
-from zipline.errors import WindowLengthNotPositive
+
+from zipline.utils.control_flow import nullctx
+from zipline.errors import WindowLengthNotPositive, UnsupportedDataType
 
 from .term import NotSpecified
 
@@ -12,9 +14,9 @@ class PositiveWindowLengthMixin(object):
     Validation mixin enforcing that a Term gets a positive WindowLength
     """
     def _validate(self):
+        super(PositiveWindowLengthMixin, self)._validate()
         if not self.windowed:
             raise WindowLengthNotPositive(window_length=self.window_length)
-        return super(PositiveWindowLengthMixin, self)._validate()
 
 
 class SingleInputMixin(object):
@@ -22,6 +24,7 @@ class SingleInputMixin(object):
     Validation mixin enforcing that a Term gets a length-1 inputs list.
     """
     def _validate(self):
+        super(SingleInputMixin, self)._validate()
         num_inputs = len(self.inputs)
         if num_inputs != 1:
             raise ValueError(
@@ -31,7 +34,26 @@ class SingleInputMixin(object):
                     num_inputs=num_inputs
                 )
             )
-        return super(SingleInputMixin, self)._validate()
+
+
+class RestrictedDTypeMixin(object):
+    """
+    Validation mixin enforcing that a term has a specific dtype.
+    """
+    ALLOWED_DTYPES = NotSpecified
+
+    def _validate(self):
+        super(RestrictedDTypeMixin, self)._validate()
+        assert self.ALLOWED_DTYPES is not NotSpecified, (
+            "ALLOWED_DTYPES not supplied on subclass "
+            "of RestrictedDTypeMixin: %s." % type(self).__name__
+        )
+
+        if self.dtype not in self.ALLOWED_DTYPES:
+            raise UnsupportedDataType(
+                typename=type(self.__name__),
+                dtype=self.dtype,
+            )
 
 
 class CustomTermMixin(object):
@@ -43,10 +65,14 @@ class CustomTermMixin(object):
 
     Used by CustomFactor, CustomFilter, CustomClassifier, etc.
     """
+    ctx = nullctx()
+
     def __new__(cls,
                 inputs=NotSpecified,
                 window_length=NotSpecified,
+                mask=NotSpecified,
                 dtype=NotSpecified,
+                missing_value=NotSpecified,
                 **kwargs):
 
         unexpected_keys = set(kwargs) - set(cls.params)
@@ -63,7 +89,9 @@ class CustomTermMixin(object):
             cls,
             inputs=inputs,
             window_length=window_length,
+            mask=mask,
             dtype=dtype,
+            missing_value=missing_value,
             **kwargs
         )
 
@@ -78,7 +106,6 @@ class CustomTermMixin(object):
         Call the user's `compute` function on each window with a pre-built
         output array.
         """
-        # TODO: Make mask available to user's `compute`.
         compute = self.compute
         missing_value = self.missing_value
         params = self.params
@@ -87,15 +114,41 @@ class CustomTermMixin(object):
             # TODO: Consider pre-filtering columns that are all-nan at each
             # time-step?
             for idx, date in enumerate(dates):
+                col_mask = mask[idx]
+                masked_out = out[idx][col_mask]
+                masked_assets = assets[col_mask]
+
                 compute(
                     date,
-                    assets,
-                    out[idx],
-                    *(next(w) for w in windows),
+                    masked_assets,
+                    masked_out,
+                    *(next(w)[:, col_mask] for w in windows),
                     **params
                 )
-        out[~mask] = missing_value
+                out[idx][col_mask] = masked_out
         return out
 
     def short_repr(self):
         return type(self).__name__ + '(%d)' % self.window_length
+
+
+class LatestMixin(SingleInputMixin):
+    """
+    Mixin for behavior shared by Custom{Factor,Filter,Classifier}.
+    """
+    window_length = 1
+
+    def compute(self, today, assets, out, data):
+        out[:] = data[-1]
+
+    def _validate(self):
+        super(LatestMixin, self)._validate()
+        if self.inputs[0].dtype != self.dtype:
+            raise TypeError(
+                "{name} expected an input of dtype {expected}, "
+                "but got {actual} instead.".format(
+                    name=type(self).__name__,
+                    expected=self.dtype,
+                    actual=self.inputs[0].dtype,
+                )
+            )
